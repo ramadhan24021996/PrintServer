@@ -1,0 +1,26 @@
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime JSON / Database files
+users.json
+printers.json
+settings.json
+sessions.json
+alert-state.json
+groups.json
+mobile-tokens.json
+job-metadata.json
+
+# Data directory
+data/
+
+# Temporary & Scratch files
+*.tmp
+tmp_script_0.js
+
+# Environment variables
+.env

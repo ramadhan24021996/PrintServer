@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  printserver:
+    build: .
+    container_name: printserver
+    restart: unless-stopped
+    network_mode: host # Host mode recommended for SNMP network discovery & CUPS broadcast
+    environment:
+      - PORT=3003
+      - SCAN_DIR=/opt/scans
+      - USERS_FILE=/app/data/users.json
+      - DATA_FILE=/app/data/printers.json
+      - SETTINGS_FILE=/app/data/settings.json
+      - SESSIONS_FILE=/app/data/sessions.json
+      - ALERT_STATE_FILE=/app/data/alert-state.json
+    privileged: true
+    volumes:
+      - printserver_data:/app/data
+      - printserver_scans:/opt/scans
+      - ./:/app
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
+      - /dev/bus/usb:/dev/bus/usb
+
+volumes:
+  printserver_data:
+  printserver_scans:
