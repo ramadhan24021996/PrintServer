@@ -1,81 +1,85 @@
-# PrintDash
+# PrintServer
 
-<img width="1376" height="768" alt="PrintDash Banner" src="https://github.com/user-attachments/assets/312fb595-4a8f-41dc-8233-bd5df12c4ded" />
+<img width="1376" height="768" alt="PrintServer Banner" src="https://github.com/user-attachments/assets/312fb595-4a8f-41dc-8233-bd5df12c4ded" />
 
-A self-hosted office printer management dashboard with SNMP-based toner/status monitoring, print job control, network scanning, and Telegram alerts — all from a single Node.js process.
+A powerful, self-hosted office printer & scanner management dashboard with SNMP-based toner/status monitoring, CUPS print queue control, remote SANE scanning, Telegram alerts, print history PDF exports, and Mobile PWA support — all running from a single Node.js process.
 
 ---
 
 ## Features
 
-### Printer Monitoring
-- SNMP polling of networked printers (Canon, HP, and others)
-- Toner/ink levels per cartridge with low-toner threshold alerts
-- Paper tray status and empty tray detection
-- Jam, cover-open, and service alert detection
-- Online/offline state with consecutive-failure debounce (avoids false alarms from transient SNMP timeouts)
-- Page count tracking with history per printer
-- Uptime display
+### 🖨️ Printer Monitoring
+- **SNMP Polling**: Real-time polling for networked printers (Canon, HP, Epson, Brother, Ricoh, Xerox, etc.).
+- **Toner & Supply Tracking**: Detailed percentage levels per cartridge with customizable low-toner alerts.
+- **Paper & Hardware Status**: Paper tray level detection, paper empty alerts, jam detection, cover open, and service warnings.
+- **Reliable Debounce**: Online/offline detection with consecutive-failure debounce to eliminate false alarms from temporary SNMP timeouts.
+- **Page Counter & Uptime**: Print volume history tracking per printer and server uptime stats.
 
-### Print Management (via CUPS)
-- View all CUPS print queues and their current status
-- Submit print jobs directly from the dashboard (file upload)
-- Live and completed job history with job cancellation
-- Pause/resume individual print queues
-- Set default printer
-- Discover IPP printers on the local network and add them to CUPS in one click
+### 📋 Print Management (CUPS Integration)
+- **Queue Control**: View all active CUPS print queues, pause/resume queues, and set the default printer.
+- **Dashboard File Printing**: Direct file printing from web UI (supports PDF, DOCX, XLSX, TXT, and image files).
+- **Job Control & Cancellation**: Cancel active/pending print jobs directly from the dashboard.
+- **Print History & PDF Export**: View complete history, filter/group by user or printer, multi-select deletion, and 1-click **Export to PDF** with automated 30-day report reminder.
 
-### Scanning (via SANE + Samba)
-- Detect connected scanners via `scanimage`
-- Trigger scans remotely from the dashboard
-- Browse and download completed scan files
-- Built-in Samba config helper — generates the `/etc/samba/smb.conf` snippet so Canon/HP printers can scan-to-folder directly to the server over SMB (`\\SERVER_IP\scans`)
+### 📄 Scanner & Samba Support (SANE + SMB)
+- **Remote Web Scanning**: Trigger scans from connected SANE scanners directly from the browser UI.
+- **Scan File Management**: View, preview, and download scanned documents.
+- **Scan-to-Folder (SMB)**: Built-in Samba config generator for `/etc/samba/smb.conf` so Canon/HP network printers can scan directly to `\\SERVER_IP\scans`.
 
-### Printer Discovery
-- SNMP subnet scan to auto-discover printers on your network
-- Automatic local subnet detection
-- IPP/CUPS discovery as an alternative to SNMP
-- One-click add from scan results
+### 🔍 Auto Printer Discovery
+- **Subnet SNMP Scanner**: Scan local IP subnets to auto-detect network printers.
+- **1-Click Auto-Provisioning**: Automatically creates CUPS print queue (`ipp://<ip>/ipp/print`) and SANE scanner entry (`airscan.conf`) in one click.
+- **IPP / CUPS Discovery**: Alternative IPP mDNS discovery for local subnet printers.
 
-### Alerts (Telegram)
-- Instant notifications for low toner, paper empty, jams, offline, and back-online events
-- Per-alert type toggles (enable/disable individually)
-- Configurable toner threshold percentage
-- Alert cooldown to prevent repeated notifications for the same condition
-- Alert state persisted to disk — server restarts do not re-fire already-sent alerts
-- Test message button to verify your bot token and chat ID
+### 📱 Mobile PWA & QR Code Access
+- **Installable PWA**: Mobile-first progressive web app with offline status indicator.
+- **Instant QR Pairing**: Administrator can generate user QR codes for quick passwordless mobile login.
 
-### Dashboard & Auth
-- Dark-themed responsive web UI
-- Role-based login — `admin` (full access) and `user` (read-only monitoring)
-- Admin user management (add, change password, delete)
-- Settings page with live Telegram configuration
+### 🔔 Telegram Alerts
+- **Real-Time Notifications**: Instant alert messages for low toner, empty paper, paper jams, offline state, and back-online recovery.
+- **Fine-Grained Toggles**: Enable or disable specific alert types individually.
+- **Alert Cooldown & Persistence**: Cooldown timer prevents duplicate spam; state is saved to disk so server restarts don't re-trigger existing alerts.
+- **Test Message Button**: Send a test alert to verify bot token and Chat ID.
 
- <img width="1897" height="904" alt="2026-07-06 16_58_24-PrintDash and 25 more pages - Personal - Microsoft​ Edge" src="https://github.com/user-attachments/assets/fc40b844-6459-400f-8ea5-0022417cb3ec" />
+### 🔐 Security & Access Control
+- **Role-Based Auth**: `admin` (full management access) and `user` (read-only monitoring & printing).
+- **User Management**: Add new users, manage roles, change passwords, and track user sessions.
 
 ---
 
-## Requirements
+<img width="1897" height="904" alt="PrintServer Dashboard Overview" src="https://github.com/user-attachments/assets/fc40b844-6459-400f-8ea5-0022417cb3ec" />
 
-- Node.js 18+
-- Network access (SNMP, UDP 161) to your printers
-- **CUPS**  for print queue management, job control, and IPP-based printer discovery
-- **SANE** (`scanimage`) for scanner support
-- **Samba** (`smbd`) if you want scan-to-folder from printer web UIs
+---
 
-***On Debian/Ubuntu:***
+## 🛠️ System Requirements
 
-## 1. Installation
+- **OS**: Linux (Debian / Ubuntu / Raspberry Pi OS recommended)
+- **Node.js**: 18.0 or higher
+- **Network**: SNMP access (UDP port 161) to network printers
+- **Dependencies**: CUPS (`cupsd`), SANE (`sane-utils`, `sane-airscan`), Samba (`smbd` optional for Scan-to-Folder), LibreOffice (optional for DOCX/XLSX printing)
+
+---
+
+## 🚀 Installation Guide
+
+### Option 1: Direct Host Installation (Recommended for CUPS/SANE)
+
+#### 1. Install System Dependencies (Debian/Ubuntu)
 
 ```bash
 sudo apt update
-sudo apt install -y cups cups-client sane-utils sane-airscan samba printer-driver-all
+sudo apt install -y cups cups-client sane-utils sane-airscan samba printer-driver-all libreoffice-writer-nogui libreoffice-calc-nogui
 sudo usermod -aG lpadmin $USER
 
-# Grant non-root write permission for SANE scanner auto-provisioning:
+# Grant permissions for SANE scanner auto-provisioning
+sudo touch /etc/sane.d/airscan.conf
 sudo chown root:lpadmin /etc/sane.d/airscan.conf 2>/dev/null || true
 sudo chmod 664 /etc/sane.d/airscan.conf 2>/dev/null || true
+```
 
+#### 2. Clone Repository & Install Node Modules
+
+```bash
 git clone https://github.com/ramadhan24021996/PrintServer.git
 cd PrintServer
 npm install
@@ -83,88 +87,56 @@ cp printers.example.json printers.json
 cp settings.example.json settings.json
 ```
 
-## 2. Run
+#### 3. Start Server
 
 ```bash
+# Development / Testing
 npm start
-```
 
-Production (PM2):
-
-```bash
-pm2 start server.js --name printdash
+# Production with PM2
+sudo npm install -g pm2
+pm2 start server.js --name printserver
 pm2 save
-
 ```
 
-## 3. Dashboard
+---
 
-Open `http://SERVER_IP:3003`
-
-**Default login**
-```
-Username: admin
-Password: admin123
-```
-
-## 4. Add a printer
-
-1.  Overview → **+ Add Printer**
-2.  Enter Name, IP address, Brand, SNMP community (`public`)
-3.  Check **"Also create CUPS print queue + SANE scan device"**
-4.  Save
-
-This creates:
-
--   SNMP monitoring entry
--   CUPS print queue: `lpadmin -p "<name>" -E -v ipp://<ip>/ipp/print -m everywhere`
--   SANE scan entry in `/etc/sane.d/airscan.conf`: `"<name>" = http://<ip>:80/eSCL, eSCL`
-
-## 5. If auto-provisioning fails, add manually
-
-CUPS:
+### Option 2: Docker / Docker Compose
 
 ```bash
-lpadmin -p "PrinterName" -E -v ipp://192.168.x.x/ipp/print -m everywhere
-lpstat -p
+docker-compose up -d
 ```
 
-SANE — edit `/etc/sane.d/airscan.conf`, under `[devices]`:
-```
-"PrinterName" = http://192.168.x.x:80/eSCL, eSCL
+---
 
-scanimage -L
-```
+## 🌐 Dashboard Access
 
-Name must match exactly in: PrintDash printer name, CUPS queue name, airscan.conf entry.
+Open your browser and navigate to: `http://SERVER_IP:3003`
 
-## 6. Add a user
+**Default Credentials:**
+- **Username:** `admin`
+- **Password:** `admin123`
 
-1.  Users → Add User
-2.  Enter username, password
-3. Select a Role
+*(Make sure to change the admin password upon initial login in the Users section).*
 
-## 7. Enable scan-to-folder from the printer
+---
 
-1.  Settings → Scans → copy the Samba config block
-2.  Add to `/etc/samba/smb.conf`
-```bash
-systemctl restart smbd
-```
-3.  On printer web UI: Scan → Scan to Folder → `\\SERVER_IP\scans`
+## ⚙️ Environment Variables
 
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `3003` | HTTP web server port |
+| `DATA_FILE` | `./printers.json` | Path to printer list JSON |
+| `USERS_FILE` | `./users.json` | Path to user accounts JSON |
+| `SETTINGS_FILE` | `./settings.json` | Path to system settings & Telegram config |
+| `SESSIONS_FILE` | `./sessions.json` | Path to active user sessions |
+| `ALERT_STATE_FILE` | `./alert-state.json` | Path to persisted alert cooldown state |
+| `SCAN_DIR` | `/opt/scans` | Storage path for scanned files |
+| `UPLOAD_DIR` | `/tmp/printserver-uploads` | Storage path for uploaded print jobs |
+| `AIRSCAN_CONF` | `/etc/sane.d/airscan.conf` | Location of SANE airscan configuration file |
 
+---
 
-## Default Environment variables
+## 📄 License
 
--   `USERS_FILE` — default `./users.json`
--   `SESSIONS_FILE` — default `./sessions.json`
--   `DATA_FILE` — default `./printers.json`
--   `SETTINGS_FILE` — default `./settings.json`
--   `SCAN_DIR` — default `/opt/scans`
--   `UPLOAD_DIR` — default `/tmp/printdash-uploads`
--   `AIRSCAN_CONF` — default `/etc/sane.d/airscan.conf`
-
-## License
-
-MIT
+Distributed under the [MIT License](LICENSE).

@@ -3153,7 +3153,7 @@ function downloadHistoryPDF() {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Laporan Print History - PrintDash</title>
+      <title>Laporan Print History - PrintServer</title>
       <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; padding: 24px; color: #1e293b; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px; }
@@ -3170,7 +3170,7 @@ function downloadHistoryPDF() {
     <body>
       <div class="header">
         <div>
-          <div class="title">🖨️ PrintDash - Laporan Riwayat Cetak</div>
+          <div class="title">🖨️ PrintServer - Laporan Riwayat Cetak</div>
           <div class="meta">Tanggal Cetak Laporan: \${nowStr}</div>
         </div>
         <div class="no-print">
