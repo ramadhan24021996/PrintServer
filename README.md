@@ -172,6 +172,53 @@ sudo systemctl restart smbd
 
 ---
 
+## 🖥️ Client PC Setup (Printing via PrintServer)
+
+PrintServer creates the printer queues in **CUPS** on the server. For client PCs to print through the server, CUPS printer sharing must be enabled.
+
+### Server side (one time)
+
+```bash
+# Share printers over the network (IPP, port 631)
+sudo cupsctl --share-printers --remote-any
+sudo lpadmin -p "PrinterName" -o printer-is-shared=true   # repeat per printer
+sudo systemctl restart cups
+
+# Allow port 631 if a firewall is active
+sudo ufw allow 631/tcp
+```
+
+> By default CUPS listens on `localhost` only (`_share_printers=0`), so clients cannot reach it until sharing is enabled. Check with `cupsctl`.
+
+Printer URL used by clients (queue name = the printer name in PrintServer):
+
+```
+http://SERVER_IP:631/printers/PrinterName
+```
+
+### Windows 10/11
+1. Settings → Bluetooth & devices → Printers & scanners → **Add device** → *Add manually*
+2. Choose **Select a shared printer by name** and enter `http://SERVER_IP:631/printers/PrinterName`
+3. Pick a driver (or *Microsoft IPP Class Driver* / *Generic* if prompted), then finish.
+
+### Linux
+```bash
+lpadmin -p "PrinterName" -E -v ipp://SERVER_IP:631/printers/PrinterName -m everywhere
+lpstat -p
+```
+Or use Settings → Printers → Add → enter the IPP URL.
+
+### macOS
+System Settings → Printers & Scanners → **+** → *IP* tab → Protocol **Internet Printing Protocol - IPP**, Address `SERVER_IP:631`, Queue `printers/PrinterName`.
+
+### Without installing anything
+Open `http://SERVER_IP:3003`, log in, and use **Print** to upload a file (PDF, Office documents, images, text) and send it to any printer. Phones can use the **Mobile QR** page (`/mobile`).
+
+### Scanning to the server
+Scanner-to-folder is done from the printer panel to `\\SERVER_IP\scans` (see *Enable scan-to-folder* above). Clients can then download scans from the dashboard **Scans** page.
+
+---
+
 ## ⚙️ Environment Variables
 
 | Variable | Default | Description |
