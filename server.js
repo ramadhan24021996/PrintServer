@@ -229,8 +229,9 @@ const USER_ALLOWED = [
   /^\/api\/shared-docs/, /^\/api\/mobile\/print-shared$/,
   /^\/api\/mobile\/token$/, /^\/api\/mobile\/qr-image$/,
 ];
+app.get('/bg.jpg', (_req,res) => res.sendFile(path.resolve(__dirname, 'bg.jpg')));
 app.use((req, res, next) => {
-  if (req.path === '/login' || req.path === '/api/login' || req.path === '/mobile' || req.path === '/manifest.json' || req.path === '/sw.js') return next();
+  if (req.path === '/login' || req.path === '/api/login' || req.path === '/mobile' || req.path === '/manifest.json' || req.path === '/sw.js' || req.path === '/bg.jpg') return next();
   const session = getSession(req);
   if (session && session.isMobile && req.path === '/') {
     return res.redirect('/mobile');
@@ -1058,8 +1059,8 @@ app.delete('/api/groups/:id', (req,res) => {
 
 const LOGIN_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>PrintServer Login</title>
 <style>
-body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#0f172a;display:flex;align-items:center;justify-content:center;height:100vh}
-.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:32px;width:300px}
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,0.85),rgba(15,23,42,0.75)),url('/bg.jpg') center/cover no-repeat fixed;display:flex;align-items:center;justify-content:center;height:100vh}
+.card{background:rgba(30,41,59,0.85);backdrop-filter:blur(10px);border:1px solid rgba(51,65,85,0.7);border-radius:16px;padding:32px;width:320px;box-shadow:0 12px 32px rgba(0,0,0,0.4)}
 h1{color:#f1f5f9;font-size:1.1rem;margin:0 0 20px;display:flex;align-items:center;gap:8px}
 label{color:#94a3b8;font-size:.8rem;display:block;margin-bottom:4px}
 input{width:100%;box-sizing:border-box;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 10px;color:#f1f5f9;margin-bottom:14px;font-size:.85rem}
@@ -2261,25 +2262,25 @@ const HTML = `<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0f172a;--surface:#1e293b;--surface2:#0f172a;--border:#334155;--border2:#1e3a5f;
-  --text:#e2e8f0;--muted:#64748b;--subtle:#94a3b8;
+  --bg:#0f172a;--surface:rgba(30,41,59,0.82);--surface2:rgba(15,23,42,0.82);--border:rgba(51,65,85,0.7);--border2:rgba(30,58,95,0.7);
+  --text:#e2e8f0;--muted:#94a3b8;--subtle:#cbd5e1;
   --blue:#3b82f6;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--orange:#f97316;
 }
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,0.88),rgba(15,23,42,0.78)),url('/bg.jpg') center/cover no-repeat fixed;color:var(--text);min-height:100vh}
 .layout{display:flex;min-height:100vh}
-.sidebar{width:224px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:20;overflow-y:auto}
+.sidebar{width:224px;background:rgba(30,41,59,0.85);backdrop-filter:blur(12px);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:20;overflow-y:auto}
 .sidebar-logo{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;font-weight:700;font-size:1rem;color:#f1f5f9}
 .sidebar-logo svg{color:var(--blue);flex-shrink:0}
 .sidebar-nav{flex:1;padding:12px 8px;overflow-y:auto}
 .nav-section{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:10px 12px 4px;margin-top:4px}
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:.84rem;color:var(--subtle);transition:all .15s;margin-bottom:2px;user-select:none}
-.nav-item:hover{background:rgba(255,255,255,.06);color:var(--text)}
-.nav-item.active{background:rgba(59,130,246,.15);color:var(--blue)}
+.nav-item:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.nav-item.active{background:rgba(59,130,246,.25);color:var(--blue)}
 .nav-item svg{flex-shrink:0;opacity:.7}.nav-item.active svg{opacity:1}
 .nbadge{margin-left:auto;background:#ef444433;color:#f87171;border:1px solid #7f1d1d;border-radius:999px;padding:1px 7px;font-size:.7rem}
 .sidebar-footer{padding:12px;border-top:1px solid var(--border);font-size:.72rem;color:var(--muted)}
-.main{margin-left:224px;flex:1;display:flex;flex-direction:column}
-header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+.main{margin-left:224px;flex:1;display:flex;flex-direction:column;background:transparent}
+header{background:rgba(30,41,59,0.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
 .header-title{font-size:1.05rem;font-weight:700;color:#f1f5f9}
 .header-sub{font-size:.75rem;color:var(--muted);margin-top:1px}
 .hactions{display:flex;gap:8px;align-items:center}
