@@ -2088,6 +2088,58 @@ app.post('/api/settings/test-telegram', async (req,res) => {
   else res.status(400).json({ok:false, error:(r&&(r.description||r.error))||'Failed to send'});
 });
 
+// ── Backup & Restore API ──────────────────────────────────────────────────────
+app.get('/api/backup/export', (_req, res) => {
+  const backupData = {
+    version: '4.0.0',
+    appName: 'PrintServer',
+    exportedAt: new Date().toISOString(),
+    printers: PRINTERS,
+    users: USERS,
+    settings: SETTINGS,
+    groups: GROUPS,
+    mobileTokens: MOBILE_TOKENS,
+    jobMetadata: JOB_METADATA
+  };
+  const dateStr = new Date().toISOString().split('T')[0];
+  const filename = `printserver-backup-${dateStr}.json`;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(JSON.stringify(backupData, null, 2));
+});
+
+app.post('/api/backup/import', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const data = req.body;
+    if (!data || typeof data !== 'object') {
+      return res.status(400).json({ ok: false, error: 'File backup tidak valid' });
+    }
+    if (!Array.isArray(data.printers) || !Array.isArray(data.users) || !data.settings) {
+      return res.status(400).json({ ok: false, error: 'Komponen backup tidak lengkap (printers, users, settings)' });
+    }
+
+    // Update in-memory data
+    PRINTERS = data.printers;
+    USERS = data.users;
+    SETTINGS = { ...DEFAULT_SETTINGS, ...data.settings };
+    if (Array.isArray(data.groups)) GROUPS = data.groups;
+    if (data.mobileTokens && typeof data.mobileTokens === 'object') MOBILE_TOKENS = data.mobileTokens;
+    if (data.jobMetadata && typeof data.jobMetadata === 'object') JOB_METADATA = data.jobMetadata;
+
+    // Persist all data files to disk
+    await savePrinters();
+    await saveUsers();
+    await saveSettings();
+    saveGroups();
+    saveMobileTokens();
+    saveJobMetadata();
+
+    res.json({ ok: true, message: 'Konfigurasi PrintServer berhasil dipulihkan (Restored)!' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'Gagal memulihkan backup: ' + e.message });
+  }
+});
+
 // SNMP subnet discovery
 app.get('/api/discover/snmp', async (req,res) => {
   const cidr = (req.query.cidr || SETTINGS.network.scanSubnet || guessLocalSubnet()).trim();
@@ -3454,6 +3506,21 @@ async function renderSettingsView() {
       <div class="field"><label>Default Subnet (CIDR)</label><input id="s-subnet" placeholder="192.168.18.0/24" value="\${esc(n.scanSubnet||'')}"/></div>
       <button class="btn-primary" onclick="saveNetworkSettings()">Save</button>
     </div>
+
+    <div class="settings-card">
+      <h3>💾 Backup & Restore System Configuration</h3>
+      <div class="desc">Ekspor seluruh konfigurasi PrintServer (printers, users, settings, groups) ke file JSON atau pulihkan dari file backup.</div>
+      <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;align-items:center;">
+        <button class="btn-primary" onclick="exportSystemBackup()" style="display:inline-flex;align-items:center;gap:6px;">
+          📥 Download Export Backup (.json)
+        </button>
+        <label class="btn-outline" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:0;padding:8px 14px;border-radius:8px;font-weight:600;font-size:.85rem;">
+          📤 Import Restore (.json)
+          <input type="file" id="backup-file-input" accept=".json" style="display:none" onchange="importSystemBackup(this)"/>
+        </label>
+      </div>
+      <div id="backup-status" class="settings-status"></div>
+    </div>
   \`;
 }
 
@@ -3775,6 +3842,45 @@ async function testTelegram() {
     if (d.ok) showSettingsStatus('✅ Test message sent — check Telegram','ok');
     else showSettingsStatus('❌ '+(d.error||'Failed'),'err');
   } catch(e) { showSettingsStatus('❌ '+e.message,'err'); }
+}
+
+function exportSystemBackup() {
+  window.location.href = '/api/backup/export';
+  showToast('📥 Mengunduh backup konfigurasi PrintServer...');
+}
+
+async function importSystemBackup(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!confirm('Apakah Anda yakin ingin memulihkan (restore) konfigurasi dari file "' + file.name + '"?\n\nSemua printer, user, dan settings yang ada akan ditimpa dengan isi file backup ini.')) {
+    input.value = '';
+    return;
+  }
+  const statusDiv = document.getElementById('backup-status');
+  if (statusDiv) { statusDiv.className = 'settings-status'; statusDiv.textContent = '⏳ Memproses restore konfigurasi...'; }
+  try {
+    const text = await file.text();
+    const backupJson = JSON.parse(text);
+    const r = await fetch('/api/backup/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(backupJson)
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      if (statusDiv) { statusDiv.className = 'settings-status ok'; statusDiv.textContent = '✅ ' + d.message; }
+      showToast('✅ Konfigurasi berhasil dipulihkan!');
+      setTimeout(() => { location.reload(); }, 1500);
+    } else {
+      if (statusDiv) { statusDiv.className = 'settings-status err'; statusDiv.textContent = '❌ ' + (d.error || 'Gagal memulihkan backup'); }
+      showToast('❌ Gagal memulihkan backup');
+    }
+  } catch(e) {
+    if (statusDiv) { statusDiv.className = 'settings-status err'; statusDiv.textContent = '❌ Format file JSON tidak valid: ' + e.message; }
+    showToast('❌ Error: ' + e.message);
+  } finally {
+    input.value = '';
+  }
 }
 
 // ── Groups view ───────────────────────────────────────────────────────────────

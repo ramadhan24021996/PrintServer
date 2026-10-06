@@ -46,6 +46,10 @@ A powerful, self-hosted office printer & scanner management dashboard with SNMP-
 - **Alert Cooldown & Persistence**: Cooldown timer prevents duplicate spam; state is saved to disk so server restarts don't re-trigger existing alerts.
 - **Test Message Button**: Send a test alert to verify bot token and Chat ID.
 
+### 💾 1-Click Backup & Restore
+- **Export Backup**: Download a single `.json` backup file containing all system configurations (Printers, Users, Settings, Groups, Mobile Tokens, Job Metadata).
+- **Import Restore**: Restore all configurations to PrintServer in 1-click with safety confirmation and automatic persistence to disk.
+
 ### 🔐 Security & Access Control
 - **Role-Based Auth**: `admin` (full management access) and `user` (read-only monitoring & printing).
 - **User Management**: Add new users, manage roles, change passwords, and track user sessions.
