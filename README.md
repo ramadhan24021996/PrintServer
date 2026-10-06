@@ -115,8 +115,21 @@ Open the dashboard, then follow the usage guide below.
 ### Option 2: Docker / Docker Compose
 
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
+
+---
+
+### Option 3: Portainer Stack Deployment
+
+1. Open **Portainer** (`http://SERVER_IP:9000`) → Select your environment (**local**).
+2. Go to **Stacks** → Click **+ Add stack**.
+3. Name the stack: `printserver`.
+4. Select **Repository** build method:
+   - **Repository URL**: `https://github.com/ramadhan24021996/PrintServer.git`
+   - **Repository reference**: `refs/heads/main`
+   - **Compose path**: `docker-compose.yml`
+5. Click **Deploy the stack**.
 
 ---
 
