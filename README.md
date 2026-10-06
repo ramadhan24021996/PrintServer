@@ -47,7 +47,7 @@ A powerful, self-hosted office printer & scanner management dashboard with SNMP-
 
 ---
 
-<img width="1897" height="904" alt="PrintServer Dashboard Overview" src="https://github.com/user-attachments/assets/fc40b844-6459-400f-8ea5-0022417cb3ec" />
+<img width="1897" height="904" alt="PrintServer Dashboard Overview" src="./dashboard.png" />
 
 ---
 
