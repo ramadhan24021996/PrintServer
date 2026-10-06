@@ -22,6 +22,8 @@ const ALERT_STATE_FILE  = process.env.ALERT_STATE_FILE  || './alert-state.json';
 const SETTINGS_FILE     = process.env.SETTINGS_FILE     || './settings.json';
 const JOB_METADATA_FILE = process.env.JOB_METADATA_FILE || './job-metadata.json';
 const GROUPS_FILE       = process.env.GROUPS_FILE       || './groups.json';
+const DELETED_JOBS_FILE = process.env.DELETED_JOBS_FILE || './data/deleted-jobs.json';
+
 function resolveWritableDir(targetPath, fallbackPath) {
   try {
     fs.mkdirSync(targetPath, { recursive: true });
@@ -38,7 +40,16 @@ const SCAN_DIR          = resolveWritableDir(process.env.SCAN_DIR || '/opt/scans
 const UPLOAD_DIR        = resolveWritableDir(process.env.UPLOAD_DIR || '/tmp/printserver-uploads', './data/uploads');
 
 const ensureDir = file => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch {} };
-[USERS_FILE, SESSIONS_FILE, DATA_FILE, SETTINGS_FILE, ALERT_STATE_FILE, JOB_METADATA_FILE, GROUPS_FILE].forEach(ensureDir);
+[USERS_FILE, SESSIONS_FILE, DATA_FILE, SETTINGS_FILE, ALERT_STATE_FILE, JOB_METADATA_FILE, GROUPS_FILE, DELETED_JOBS_FILE].forEach(ensureDir);
+
+function loadDeletedJobs() {
+  try { if (fs.existsSync(DELETED_JOBS_FILE)) return new Set(JSON.parse(fs.readFileSync(DELETED_JOBS_FILE, 'utf8'))); } catch {}
+  return new Set();
+}
+function saveDeletedJobs() {
+  try { fs.writeFileSync(DELETED_JOBS_FILE, JSON.stringify(Array.from(DELETED_JOB_IDS), null, 2)); } catch(e) {}
+}
+let DELETED_JOB_IDS = loadDeletedJobs();
 
 // ── Auth: users + sessions ──────────────────────────────────────────────────────
 function hashPasswordSync(password, salt) {
@@ -1099,7 +1110,7 @@ function loadSettings() {
   try { if (fs.existsSync(SETTINGS_FILE)) return {...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE,'utf8'))}; } catch {}
   return {...DEFAULT_SETTINGS};
 }
-function saveSettings() { fs.promises.writeFile(SETTINGS_FILE, JSON.stringify(SETTINGS,null,2)).catch(e=>console.error('Failed to save settings:',e.message)); }
+function saveSettings() { return fs.promises.writeFile(SETTINGS_FILE, JSON.stringify(SETTINGS,null,2)).catch(e=>{ console.error('Failed to save settings:',e.message); throw e; }); }
 let SETTINGS = loadSettings();
 
 // ── Telegram ──────────────────────────────────────────────────────────────────
@@ -1696,7 +1707,7 @@ function getJobStatus() {
 function getCompletedJobs() {
   return new Promise(resolve => {
     exec('lpstat -W completed -o 2>/dev/null || echo ""', (err,stdout) => {
-      const jobs=(stdout||'').split('\n').map(l=>l.trim()).filter(Boolean).map(parseJobLine);
+      const jobs=(stdout||'').split('\n').map(l=>l.trim()).filter(Boolean).map(parseJobLine).filter(j => !DELETED_JOB_IDS.has(String(j.id)));
       resolve(jobs);
     });
   });
@@ -2063,12 +2074,12 @@ app.get('/api/samba-config', (_req,res) => {
 
 // Settings + Telegram
 app.get('/api/settings', (_req,res) => res.json(SETTINGS));
-app.post('/api/settings', (req,res) => {
+app.post('/api/settings', async (req,res) => {
   SETTINGS = {...SETTINGS, ...req.body,
     telegram:{...SETTINGS.telegram, ...(req.body.telegram||{})},
     network:{...SETTINGS.network, ...(req.body.network||{})}};
-  saveSettings();
-  res.json({ok:true, settings:SETTINGS});
+  try { await saveSettings(); res.json({ok:true, settings:SETTINGS}); }
+  catch (e) { res.status(500).json({ok:false, error:'Cannot write '+SETTINGS_FILE+': '+e.message}); }
 });
 app.post('/api/settings/test-telegram', async (req,res) => {
   const {botToken, chatId} = req.body;
@@ -2079,7 +2090,8 @@ app.post('/api/settings/test-telegram', async (req,res) => {
 
 // SNMP subnet discovery
 app.get('/api/discover/snmp', async (req,res) => {
-  const cidr = req.query.cidr || SETTINGS.network.scanSubnet || guessLocalSubnet();
+  const cidr = (req.query.cidr || SETTINGS.network.scanSubnet || guessLocalSubnet()).trim();
+  if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(cidr)) return res.status(400).json({error:'Invalid subnet, use format 192.168.1.0/24'});
   const community = req.query.community || 'public';
   try {
     const found = await discoverSnmpDevices(cidr, community);
@@ -2087,7 +2099,10 @@ app.get('/api/discover/snmp', async (req,res) => {
     res.json({cidr, results: found.map(f=>({...f, alreadyAdded: existingIps.has(f.ip)}))});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
-app.get('/api/discover/subnet-guess', (_req,res) => res.json({cidr: guessLocalSubnet()}));
+app.get('/api/discover/subnet-guess', (_req,res) => {
+  const saved = (SETTINGS.network && SETTINGS.network.scanSubnet || '').trim();
+  res.json({cidr: saved || guessLocalSubnet(), saved: !!saved});
+});
 
 // CUPS network discovery (lpinfo) + one-click add via lpadmin
 app.get('/api/cups/discover', async (_req,res) => {
@@ -2128,6 +2143,18 @@ app.get('/api/cups/jobs/history', async (req,res) => {
 app.post('/api/cups/jobs/:jobId/cancel', async (req,res) => {
   try { await cancelJob(req.params.jobId); res.json({ok:true}); }
   catch(e) { res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/cups/jobs/history/delete', express.json(), async (req, res) => {
+  const { jobIds } = req.body || {};
+  if (!Array.isArray(jobIds) || !jobIds.length) return res.status(400).json({ error: 'No jobIds provided' });
+  jobIds.forEach(id => {
+    const strId = String(id);
+    DELETED_JOB_IDS.add(strId);
+    execFile('cancel', ['-x', strId], () => {});
+  });
+  saveDeletedJobs();
+  res.json({ ok: true, deletedCount: jobIds.length });
 });
 
 app.get('/api/cups/printers/detail', async (req,res) => {
@@ -2931,7 +2958,8 @@ async function renderScansView(forceRefresh) {
   document.getElementById('content').innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><span class="spin"></span> Loading scans…</div>';
   try {
     const r=await fetch('/api/scans'); const d=await r.json();
-    const smbaConf=await fetch('/api/samba-config').then(x=>x.json());
+    const smbaConf=await fetch('/api/samba-config').then(x=>x.json()).catch(()=>({config:''}));
+    if (currentView!=='scans') return; // user navigated away
     const scans=d.scans||[];
     let rows=scans.length?scans.map(s=>{
       const delBtn=window.USER_ROLE===\'admin\'
@@ -2973,11 +3001,13 @@ async function renderScansView(forceRefresh) {
         <tbody>\${rows}</tbody>
       </table>\`;
     const devs = await fetch('/api/scans/devices'+(forceRefresh?'?refresh=1':'')).then(x=>x.json()).then(x=>x.devices||[]).catch(()=>[]);
+    if (currentView!=='scans') return;
     const devSel = document.getElementById('scan-device');
+    if (!devSel) return;
     devSel.innerHTML = devs.length
       ? devs.map(d=>'<option value="'+esc(d.id)+'">'+esc(d.label)+'</option>').join('')
       : '<option value="">No scanners found</option>';
-  } catch { document.getElementById('content').innerHTML='<div class="empty">⚠ Could not load scans</div>'; }
+  } catch { if (currentView==='scans') document.getElementById('content').innerHTML='<div class="empty">⚠ Could not load scans</div>'; }
 }
 
 async function deleteScan(name) {
@@ -3015,8 +3045,9 @@ function stopJobsAutoRefresh(){ if (jobsAutoTimer) { clearInterval(jobsAutoTimer
 function renderHistTable(jobs) {
   if (!jobs.length) return '<div class="no-data">No completed jobs in this group</div>';
   return \`<table class="data-table">
-    <thead><tr><th>Job</th><th>Printer</th><th>Submitted by</th><th>Size</th><th>Time</th><th>Document Name</th></tr></thead>
+    <thead><tr><th style="width:36px;text-align:center"><input type="checkbox" class="chk-hist-all" onclick="toggleSelectAllHist(this)" title="Pilih semua"></th><th>Job</th><th>Printer</th><th>Submitted by</th><th>Size</th><th>Time</th><th>Document Name</th></tr></thead>
     <tbody>\${jobs.map(j=>\`<tr>
+      <td style="text-align:center"><input type="checkbox" class="chk-hist-item" value="\${esc(j.id)}" onchange="updateHistSelectCount()"></td>
       <td><span class="job-id">\${esc(j.id)}</span></td>
       <td>\${esc(j.printer)}</td>
       <td>\${esc(j.user)}</td>
@@ -3058,6 +3089,138 @@ function setHistGroup(mode, el) {
   document.querySelectorAll('.grp-btn').forEach(b=>b.classList.remove('active'));
   if (el) el.classList.add('active');
   renderJobsView(true);
+}
+
+function toggleSelectAllHist(masterCb) {
+  const cbs = document.querySelectorAll('.chk-hist-item');
+  cbs.forEach(cb => cb.checked = masterCb.checked);
+  document.querySelectorAll('.chk-hist-all').forEach(m => m.checked = masterCb.checked);
+  updateHistSelectCount();
+}
+
+function updateHistSelectCount() {
+  const selected = document.querySelectorAll('.chk-hist-item:checked');
+  const countSpan = document.getElementById('selected-hist-count');
+  const delBtn = document.getElementById('btn-delete-selected-hist');
+  if (countSpan) countSpan.textContent = selected.length;
+  if (delBtn) {
+    if (selected.length > 0) delBtn.style.display = 'inline-flex';
+    else delBtn.style.display = 'none';
+  }
+}
+
+async function deleteSelectedHistory() {
+  const selected = Array.from(document.querySelectorAll('.chk-hist-item:checked')).map(cb => cb.value);
+  if (!selected.length) return;
+  if (!confirm('Hapus ' + selected.length + ' riwayat cetak terpilih?')) return;
+  
+  try {
+    const res = await fetch('/api/cups/jobs/history/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobIds: selected })
+    });
+    const d = await res.json();
+    if (d.ok) renderJobsView(true);
+    else alert('Gagal menghapus: ' + (d.error || 'Unknown error'));
+  } catch (e) { alert('Gagal menghapus: ' + e.message); }
+}
+
+function downloadHistoryPDF() {
+  const jobs = window.currentHistJobs || [];
+  if (!jobs.length) {
+    alert('Tidak ada riwayat cetak untuk diunduh.');
+    return;
+  }
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Gagal membuka jendela cetak. Mohon izinkan pop-up di browser Anda.');
+    return;
+  }
+  const nowStr = new Date().toLocaleString('id-ID');
+  const rowsHtml = jobs.map((j, idx) => \`
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid #ddd;">\${idx + 1}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;font-family:monospace;">\${esc(j.id)}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;">\${esc(j.printer)}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;">\${esc(j.user)}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;">\${fmtSize(j.sizeBytes)}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;">\${esc(j.submitted)}</td>
+      <td style="padding:8px;border-bottom:1px solid #ddd;font-weight:bold;">\${esc(j.docName || j.id)}</td>
+    </tr>\`).join('');
+
+  printWindow.document.write(\`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Laporan Print History - PrintDash</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 24px; color: #1e293b; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px; }
+        .title { font-size: 20px; font-weight: bold; color: #1e3a8a; }
+        .meta { font-size: 12px; color: #64748b; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        th { background: #f1f5f9; text-align: left; padding: 10px 8px; border-bottom: 2px solid #cbd5e1; font-weight: 600; }
+        .summary { display: flex; gap: 20px; margin-bottom: 16px; background: #f8fafc; padding: 12px; border-radius: 6px; font-size: 13px; }
+        .sum-card { flex: 1; }
+        .sum-card span { font-weight: bold; color: #2563eb; }
+        @media print { body { padding: 0; } .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div>
+          <div class="title">🖨️ PrintDash - Laporan Riwayat Cetak</div>
+          <div class="meta">Tanggal Cetak Laporan: \${nowStr}</div>
+        </div>
+        <div class="no-print">
+          <button onclick="window.print()" style="padding:8px 16px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">📄 Simpan sebagai PDF / Cetak</button>
+        </div>
+      </div>
+      <div class="summary">
+        <div class="sum-card">Total Jobs History: <span>\${jobs.length}</span></div>
+        <div class="sum-card">Tanggal Export: <span>\${new Date().toLocaleDateString('id-ID')}</span></div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Job ID</th><th>Printer</th><th>User</th><th>Ukuran</th><th>Waktu Submit</th><th>Nama Dokumen</th></tr>
+        </thead>
+        <tbody>\${rowsHtml}</tbody>
+      </table>
+      <script>setTimeout(() => { window.print(); }, 500);<\\/script>
+    </body>
+    </html>
+  \`);
+  printWindow.document.close();
+}
+
+function check30DayAutoDownload() {
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const lastDownload = localStorage.getItem('last30DayPdfDownload');
+  if (!lastDownload || Date.now() - Number(lastDownload) >= THIRTY_DAYS_MS) {
+    if (window.currentHistJobs && window.currentHistJobs.length > 0) {
+      localStorage.setItem('last30DayPdfDownload', String(Date.now()));
+      showToast('📅 Otomatis mengunduh laporan PDF Print History...');
+      setTimeout(downloadHistoryPDF, 1500);
+    }
+  }
+}
+
+function showToast(msg) {
+  let toast = document.getElementById('toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toast';
+    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#2563eb;color:white;padding:12px 20px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:9999;transition:opacity 0.3s, transform 0.3s;opacity:0;transform:translateY(20px);';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateY(0)';
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(20px)';
+  }, 4000);
 }
 
 async function renderJobsView(silent) {
@@ -3130,10 +3293,14 @@ async function renderJobsView(silent) {
           <button id="grp-none" class="grp-btn btn-outline btn-sm\${histGroupBy==='none'?' active':''}" onclick="setHistGroup('none',this)">None</button>
           <button id="grp-user" class="grp-btn btn-outline btn-sm\${histGroupBy==='user'?' active':''}" onclick="setHistGroup('user',this)">👤 User</button>
           <button id="grp-printer" class="grp-btn btn-outline btn-sm\${histGroupBy==='printer'?' active':''}" onclick="setHistGroup('printer',this)">🖨 Printer</button>
+          <button id="btn-download-hist-pdf" class="btn-outline btn-sm" onclick="downloadHistoryPDF()" title="Download PDF (otomatis tiap 30 hari)">📄 Download PDF</button>
+          <button id="btn-delete-selected-hist" class="btn-danger btn-sm" style="display:none" onclick="deleteSelectedHistory()">🗑 Hapus (<span id="selected-hist-count">0</span>)</button>
         </div>
       </div>
       <div id="hist-container">\${histContent}</div>
     \`;
+    window.currentHistJobs = hist;
+    check30DayAutoDownload();
 
     // Auto-refresh quietly while there's something happening in the queue
     stopJobsAutoRefresh();
@@ -3198,6 +3365,7 @@ async function runSnmpDiscover() {
   try {
     const r=await fetch('/api/discover/snmp?cidr='+encodeURIComponent(cidr)+'&community='+encodeURIComponent(community));
     const d=await r.json();
+    if (!r.ok) { document.getElementById('snmp-results').innerHTML='<div class="empty">⚠ '+esc(d.error||'Scan failed')+'</div>'; return; }
     const results=d.results||[];
     if (!results.length) { document.getElementById('snmp-results').innerHTML='<div class="no-data">No SNMP-responding devices found on '+esc(cidr)+'</div>'; return; }
     document.getElementById('snmp-results').innerHTML=results.map(rr=>\`<div class="discover-row">
@@ -3582,14 +3750,18 @@ async function saveTelegramSettings() {
   }};
   try {
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if (r.ok) showSettingsStatus('✅ Settings saved','ok'); else showSettingsStatus('❌ Failed to save','err');
-  } catch(e) { showSettingsStatus('❌ '+e.message,'err'); }
+    const d=await r.json().catch(()=>({}));
+    if (r.ok && d.ok!==false) { showSettingsStatus('✅ Settings saved','ok'); showToast('✅ Settings tersimpan'); }
+    else { showSettingsStatus('❌ Failed to save: '+(d.error||r.status),'err'); showToast('❌ Gagal menyimpan: '+(d.error||r.status)); }
+  } catch(e) { showSettingsStatus('❌ '+e.message,'err'); showToast('❌ '+e.message); }
 }
 
 async function saveNetworkSettings() {
   const body={network:{scanSubnet:document.getElementById('s-subnet').value.trim()}};
-  await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  showSettingsStatus('✅ Network settings saved','ok');
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if (r.ok && d.ok!==false) { showSettingsStatus('✅ Network settings saved','ok'); showToast('✅ Default subnet tersimpan'); }
+  else { showSettingsStatus('❌ '+(d.error||'Failed to save'),'err'); showToast('❌ Gagal menyimpan'); }
 }
 
 async function testTelegram() {
