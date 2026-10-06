@@ -1,6 +1,6 @@
 # PrintServer
 
-<img width="1376" height="768" alt="PrintServer Banner" src="https://github.com/user-attachments/assets/312fb595-4a8f-41dc-8233-bd5df12c4ded" />
+<img width="1376" height="768" alt="PrintServer Banner" src="./banner.png" />
 
 A powerful, self-hosted office printer & scanner management dashboard with SNMP-based toner/status monitoring, CUPS print queue control, remote SANE scanning, Telegram alerts, print history PDF exports, and Mobile PWA support — all running from a single Node.js process.
 
