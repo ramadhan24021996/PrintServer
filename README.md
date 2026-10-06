@@ -32,8 +32,13 @@ A powerful, self-hosted office printer & scanner management dashboard with SNMP-
 - **IPP / CUPS Discovery**: Alternative IPP mDNS discovery for local subnet printers.
 
 ### 📱 Mobile PWA & QR Code Access
-- **Installable PWA**: Mobile-first progressive web app with offline status indicator.
-- **Instant QR Pairing**: Administrator can generate user QR codes for quick passwordless mobile login.
+- **Installable PWA**: Mobile-friendly web app (`/mobile`) with web manifest and service worker.
+- **QR Token Access**: Administrator generates a per-user QR code/token for quick mobile login, and can revoke it at any time.
+- **Mobile Printing**: Print uploaded files or shared documents directly from the phone.
+
+### 📂 Shared Documents & Groups
+- **Shared Documents**: Admin uploads documents to a shared library (`SHARED_DOCS_DIR`) that mobile users can print.
+- **Groups**: Organize users and printers into groups (create, edit, delete) for access management.
 
 ### 🔔 Telegram Alerts
 - **Real-Time Notifications**: Instant alert messages for low toner, empty paper, paper jams, offline state, and back-online recovery.
@@ -99,6 +104,8 @@ pm2 start server.js --name printserver
 pm2 save
 ```
 
+Open the dashboard, then follow the usage guide below.
+
 ---
 
 ### Option 2: Docker / Docker Compose
@@ -121,6 +128,50 @@ Open your browser and navigate to: `http://SERVER_IP:3003`
 
 ---
 
+## 📖 Usage Guide
+
+### 1. Add a printer
+1. Overview → **+ Add Printer**
+2. Enter Name, IP address, Brand, SNMP community (`public`)
+3. Check **"Also create CUPS print queue + SANE scan device"**
+4. Save
+
+This creates:
+- SNMP monitoring entry
+- CUPS print queue: `lpadmin -p "<name>" -E -v ipp://<ip>/ipp/print -m everywhere`
+- SANE scan entry in `/etc/sane.d/airscan.conf`: `"<name>" = http://<ip>:80/eSCL, eSCL`
+
+### 2. If auto-provisioning fails, add manually
+
+CUPS:
+```bash
+lpadmin -p "PrinterName" -E -v ipp://192.168.x.x/ipp/print -m everywhere
+lpstat -p
+```
+
+SANE — edit `/etc/sane.d/airscan.conf`, under `[devices]`:
+```
+"PrinterName" = http://192.168.x.x:80/eSCL, eSCL
+```
+Then verify with `scanimage -L`.
+
+The name must match exactly in: PrintServer printer name, CUPS queue name, and `airscan.conf` entry.
+
+### 3. Add a user
+1. Users → Add User
+2. Enter username, password
+3. Select a Role (`admin` or `user`)
+
+### 4. Enable scan-to-folder from the printer
+1. Settings → Scans → copy the Samba config block
+2. Add it to `/etc/samba/smb.conf`, then:
+```bash
+sudo systemctl restart smbd
+```
+3. On the printer web UI: Scan → Scan to Folder → `\\SERVER_IP\scans`
+
+---
+
 ## ⚙️ Environment Variables
 
 | Variable | Default | Description |
@@ -134,6 +185,11 @@ Open your browser and navigate to: `http://SERVER_IP:3003`
 | `SCAN_DIR` | `/opt/scans` | Storage path for scanned files |
 | `UPLOAD_DIR` | `/tmp/printserver-uploads` | Storage path for uploaded print jobs |
 | `AIRSCAN_CONF` | `/etc/sane.d/airscan.conf` | Location of SANE airscan configuration file |
+| `JOB_METADATA_FILE` | `./job-metadata.json` | Print job metadata (user, document name) |
+| `GROUPS_FILE` | `./groups.json` | Path to groups JSON |
+| `DELETED_JOBS_FILE` | `./data/deleted-jobs.json` | Records of deleted history entries |
+| `MOBILE_TOKENS_FILE` | `./mobile-tokens.json` | Mobile QR access tokens |
+| `SHARED_DOCS_DIR` | `/opt/shared-docs` | Storage path for shared documents |
 
 ---
 
