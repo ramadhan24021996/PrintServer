@@ -247,7 +247,10 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.get('/login', (_req,res) => res.send(LOGIN_HTML));
+app.get('/login', (_req,res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.send(LOGIN_HTML);
+});
 app.post('/api/login', express.json(), async (req,res) => {
   const { username, password } = req.body || {};
   const user = USERS.find(u => u.username === username);
@@ -2244,7 +2247,10 @@ app.delete('/api/cups/printers/:name', async (req,res) => {
 // ── (more routes appended below) ──────────────────────────────────────────────
 
 
-app.get('/', (_req,res) => res.send(HTML.replace('</head>', `<script>window.USER_ROLE=${JSON.stringify(_req.user.role)};window.USERNAME=${JSON.stringify(_req.user.username)};</script></head>`)));
+app.get('/', (_req,res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.send(HTML.replace('</head>', `<script>window.USER_ROLE=${JSON.stringify(_req.user.role)};window.USERNAME=${JSON.stringify(_req.user.username)};</script></head>`));
+});
 
 // ── HTML ──────────────────────────────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
@@ -3773,8 +3779,8 @@ async function editUserPrinterAccess(username) {
   let printers=[];
   try { printers = (await fetch('/api/printers').then(x=>x.json())).data||[]; } catch {}
   if (!printers.length) { alert('No printers configured yet.'); return; }
-  const list = printers.map((p,i)=>\`\${i+1}. \${p.name}\`).join('\\n');
-  const input = prompt('Enter comma-separated numbers of printers this user may access:\\n'+list+'\\n\\n(Leave blank to allow ALL printers)');
+  const list = printers.map((p,i)=>\`\${i+1}. \${p.name}\`).join('\\\\n');
+  const input = prompt('Enter comma-separated numbers of printers this user may access:\\\\n'+list+'\\\\n\\\\n(Leave blank to allow ALL printers)');
   if (input === null) return;
   const nums = input.trim() ? input.split(',').map(s=>parseInt(s.trim(),10)).filter(n=>!isNaN(n)&&n>=1&&n<=printers.length) : [];
   const printerAccess = nums.map(n=>printers[n-1].id);
@@ -4361,7 +4367,7 @@ async function savePrinter() {
     const lines = [];
     lines.push(cups.ok ? '✅ CUPS queue created (' + name + ')' : '❌ CUPS: ' + cups.error);
     lines.push(scan.ok ? '✅ SANE/airscan entry added' : '❌ SANE: ' + scan.error);
-    if (!cups.ok || !scan.ok) alert(lines.join('\\n') + '\\n\\nNote: the CUPS/SANE queue name must exactly match "' + name + '" for Print/Scan filtering to work.');
+    if (!cups.ok || !scan.ok) alert(lines.join('\\\\n') + '\\\\n\\\\nNote: the CUPS/SANE queue name must exactly match "' + name + '" for Print/Scan filtering to work.');
   }
 }
 
@@ -4401,15 +4407,22 @@ app.get('/manifest.json', (_req,res) => {
 });
 app.get('/sw.js', (_req,res) => {
   res.setHeader('Content-Type','application/javascript');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.send(`
-const CACHE='printserver-v5';
+const CACHE='printserver-v8';
 self.addEventListener('install',e=>self.skipWaiting());
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET')return;
+  const accept = e.request.headers.get('accept')||'';
+  if(accept.includes('text/html') || e.request.url.includes('/api/')) {
+    return;
+  }
   e.respondWith(fetch(e.request).then(r=>{
-    const clone=r.clone();
-    caches.open(CACHE).then(c=>c.put(e.request,clone));
+    if (r.ok && r.status === 200) {
+      const clone=r.clone();
+      caches.open(CACHE).then(c=>c.put(e.request,clone));
+    }
     return r;
   }).catch(()=>caches.match(e.request)));
 });
