@@ -3853,7 +3853,7 @@ function exportSystemBackup() {
 async function importSystemBackup(input) {
   const file = input.files && input.files[0];
   if (!file) return;
-  if (!confirm('Apakah Anda yakin ingin memulihkan (restore) konfigurasi dari file "' + file.name + '"?\n\nSemua printer, user, dan settings yang ada akan ditimpa dengan isi file backup ini.')) {
+  if (!confirm('Apakah Anda yakin ingin memulihkan (restore) konfigurasi dari file "' + file.name + '"?\\n\\nSemua printer, user, dan settings yang ada akan ditimpa dengan isi file backup ini.')) {
     input.value = '';
     return;
   }
