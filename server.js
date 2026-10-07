@@ -3477,6 +3477,8 @@ select option{background:var(--surface)}
 </div>
 
 <script>
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escJs(s){ return String(s||'').replace(/'/g,"\\'").replace(/"/g,'\\"'); }
 let state = {data:[], updatedAt:null, refreshing:false};
 let currentView = 'overview';
 let cupsPrinters = [];
@@ -4809,10 +4811,12 @@ async function addUser() {
     const d = await r.json();
 
     if (d.ok) {
+      if (usernameInput) usernameInput.value = '';
+      if (passwordInput) passwordInput.value = '';
       showUsersStatus('✅ User created', 'ok');
       showPrintSuccessModal({
         title: 'Successfully',
-        message: 'Akun user <strong>' + esc(username) + '</strong> berhasil dibuat & ditambahkan ke daftar Existing Users!'
+        message: 'Akun user <strong>' + esc(username) + '</strong> berhasil dibuat &amp; ditambahkan ke daftar Existing Users!'
       });
       renderUsersView();
     } else {
