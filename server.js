@@ -1642,8 +1642,6 @@ async function triggerMobileScanNow() {
   } catch(e) {
     showToast('❌ ' + e.message, 'err');
     if (status) status.innerHTML = '<div style="font-size:.75rem;color:#f87171;margin-top:6px;">❌ ' + escHtml(e.message) + '</div>';
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🖨 Scan Now'; }
   }
 }
 
@@ -1706,15 +1704,6 @@ loadServerDocs();
 </html>`);
 });
 
-// ── Shared Docs management page (Admin UI route) ────────────────────────────
-// QR token generation handled by Users view JS (frontend calls /api/mobile/token)
-// USER_ALLOWED must include shared-docs API for mobile users
-USER_ALLOWED.push(/^\/api\/shared-docs$/, /^\/api\/mobile\/print-shared$/, /^\/api\/cups\/printers\/detail$/, /^\/api\/cups\/jobs$/, /^\/mobile$/, /^\/api\/mobile\/qr-image$/, /^\/api\/analytics$/);
-// Note: /api/scans and /api/scans/download/ are already in USER_ALLOWED (line 217)
-
-// ══════════════════════════════════════════════════════════════════════════════
-// END MOBILE QR PRINT FEATURE
-// ══════════════════════════════════════════════════════════════════════════════
 app.get('/api/analytics', async (_req, res) => {
   try {
     const printers = (typeof PRINTERS !== 'undefined' && Array.isArray(PRINTERS)) ? PRINTERS : [];
@@ -1737,27 +1726,15 @@ app.get('/api/analytics', async (_req, res) => {
       console.error('Error reading scan dir for analytics:', e);
     }
 
-    const livePrintPages = printJobs.reduce((sum, j) => sum + (Number(j.pages) || 1), 0);
-    const totalPages = 45821 + livePrintPages;
+    let totalPages = printJobs.reduce((sum, j) => sum + (Number(j.pages) || 1), 0);
+    printers.forEach(p => { if (p.pages) totalPages += Number(p.pages); });
 
     const onlinePrinters = printers.filter(p => p.online !== false).length;
-    const activePrintersCount = Math.max(onlinePrinters, 21);
-    const totalPrintersCount = Math.max(printers.length, 24);
+    const activePrintersCount = onlinePrinters;
+    const totalPrintersCount = printers.length;
 
-    const liveScanCount = scanJobs.length;
-    const totalScans = 8945 + liveScanCount;
-
-    let lowTonerWarnings = printers.filter(p => p.toners && p.toners.some(t => t.pct < 20 && !t.unknown)).length;
-    if (lowTonerWarnings < 6) lowTonerWarnings = 6;
-
-    // Baseline 5 Printers from Mockup
-    const baselinePrinters = [
-      { name: 'Canon iR-ADV', pages: 9120 },
-      { name: 'HP PageWide', pages: 7650 },
-      { name: 'Epson WorkForce', pages: 5400 },
-      { name: 'Xerox VersaLink', pages: 4880 },
-      { name: 'Canon PIXMA', pages: 3210 }
-    ];
+    const totalScans = scanJobs.length;
+    const lowTonerWarnings = printers.filter(p => p.toners && p.toners.some(t => t.pct < 20 && !t.unknown)).length;
 
     const printerUsageMap = {};
     printJobs.forEach(j => {
@@ -1767,25 +1744,9 @@ app.get('/api/analytics', async (_req, res) => {
       printerUsageMap[displayName] = (printerUsageMap[displayName] || 0) + (Number(j.pages) || 1);
     });
 
-    let paperPerPrinter = [...baselinePrinters];
-    Object.keys(printerUsageMap).forEach(name => {
-      const existing = paperPerPrinter.find(p => p.name.toLowerCase() === name.toLowerCase());
-      if (existing) {
-        existing.pages += printerUsageMap[name];
-      } else {
-        paperPerPrinter.unshift({ name, pages: printerUsageMap[name] });
-      }
-    });
-    paperPerPrinter = paperPerPrinter.sort((a,b) => b.pages - a.pages).slice(0, 5);
-
-    // Baseline 5 Users from Mockup
-    const baselineUsers = [
-      { name: 'J. Smith', pages: 3450, avatar: '👤' },
-      { name: 'M. Chen', pages: 2980, avatar: '👤' },
-      { name: 'A. Garcia', pages: 2120, avatar: '👤' },
-      { name: 'S. Lee', pages: 1850, avatar: '👤' },
-      { name: 'K. Brown', pages: 1400, avatar: '👤' }
-    ];
+    const paperPerPrinter = Object.keys(printerUsageMap)
+      .map(name => ({ name, pages: printerUsageMap[name] }))
+      .sort((a,b) => b.pages - a.pages);
 
     const userUsageMap = {};
     printJobs.forEach(j => {
@@ -1793,67 +1754,33 @@ app.get('/api/analytics', async (_req, res) => {
       userUsageMap[uName] = (userUsageMap[uName] || 0) + (Number(j.pages) || 1);
     });
 
-    let paperPerUser = [...baselineUsers];
-    Object.keys(userUsageMap).forEach(name => {
-      const existing = paperPerUser.find(u => u.name.toLowerCase() === name.toLowerCase());
-      if (existing) {
-        existing.pages += userUsageMap[name];
-      } else {
-        paperPerUser.unshift({ name, pages: userUsageMap[name], avatar: '👤' });
-      }
-    });
-    paperPerUser = paperPerUser.sort((a,b) => b.pages - a.pages).slice(0, 5);
+    const paperPerUser = Object.keys(userUsageMap)
+      .map(name => ({ name, pages: userUsageMap[name], avatar: '👤' }))
+      .sort((a,b) => b.pages - a.pages)
+      .slice(0, 5);
 
-    let saneScans = 6215;
-    let cameraScans = 2730;
+    let saneScans = 0;
+    let cameraScans = 0;
     scanJobs.forEach(s => {
       const d = (s.details || s.name || '').toLowerCase();
       if (d.includes('sane') || d.includes('hardware')) saneScans++;
       else cameraScans++;
     });
 
-    // Baseline 8 Printer Health Cards from Mockup
-    const baselineHealth = [
-      { id: 'b1', name: 'Canon iR-ADV', brand: 'Canon', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
-      { id: 'b2', name: 'HP PageWide', brand: 'HP', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 80 }, { name: 'M', color: '#ec4899', pct: 65 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 88 }] },
-      { id: 'b3', name: 'Epson WorkForce', brand: 'Epson', location: 'Floor 3', status: 'Low Paper', toners: [{ name: 'C', color: '#06b6d4', pct: 90 }, { name: 'M', color: '#ec4899', pct: 85 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 75 }] },
-      { id: 'b4', name: 'Canon PIXMA', brand: 'Canon', location: 'Floor 3', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 15 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
-      { id: 'b5', name: 'Xerox VersaLink', brand: 'Xerox', location: 'Floor 3', status: 'Error', toners: [{ name: 'C', color: '#06b6d4', pct: 10 }, { name: 'M', color: '#ec4899', pct: 50 }, { name: 'Y', color: '#eab308', pct: 72 }, { name: 'K', color: '#64748b', pct: 79 }] },
-      { id: 'b6', name: 'Ricoh MP C3004', brand: 'Ricoh', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 45 }, { name: 'M', color: '#ec4899', pct: 55 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 70 }] },
-      { id: 'b7', name: 'Lexmark CX725', brand: 'Lexmark', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 70 }, { name: 'M', color: '#ec4899', pct: 60 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 65 }] },
-      { id: 'b8', name: 'Ricoh Aficio', brand: 'Ricoh', location: 'Floor 1', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 18 }, { name: 'K', color: '#64748b', pct: 79 }] }
-    ];
-
-    let printerHealth = [];
-    if (printers.length > 0) {
-      printerHealth = printers.map(p => {
-        let statusBadge = p.online !== false ? 'Online' : 'Offline';
-        if (p.online !== false && p.toners && p.toners.some(t => t.pct < 20)) statusBadge = 'Low Toner';
-        if (p.online !== false && p.trays && p.trays.some(t => t.status === 'Empty' || t.pct < 10)) statusBadge = 'Low Paper';
-        const cleanName = p.name.replace(/_/g, ' ');
-        return {
-          id: p.id,
-          name: cleanName.length > 16 ? cleanName.substring(0, 13) + '...' : cleanName,
-          brand: p.brand || 'Printer',
-          location: p.location || 'CUPS Printer',
-          status: statusBadge,
-          toners: p.toners && p.toners.length ? p.toners : [
-            { name: 'C', color: '#06b6d4', pct: 85 },
-            { name: 'M', color: '#ec4899', pct: 72 },
-            { name: 'Y', color: '#eab308', pct: 61 },
-            { name: 'K', color: '#64748b', pct: 79 }
-          ]
-        };
-      });
-      for (const bh of baselineHealth) {
-        if (printerHealth.length >= 8) break;
-        if (!printerHealth.some(ph => ph.name.toLowerCase() === bh.name.toLowerCase())) {
-          printerHealth.push(bh);
-        }
-      }
-    } else {
-      printerHealth = baselineHealth;
-    }
+    const printerHealth = printers.map(p => {
+      let statusBadge = p.online !== false ? 'Online' : 'Offline';
+      if (p.online !== false && p.toners && p.toners.some(t => t.pct < 20)) statusBadge = 'Low Toner';
+      if (p.online !== false && p.trays && p.trays.some(t => t.status === 'Empty' || t.pct < 10)) statusBadge = 'Low Paper';
+      const cleanName = p.name.replace(/_/g, ' ');
+      return {
+        id: p.id,
+        name: cleanName.length > 16 ? cleanName.substring(0, 13) + '...' : cleanName,
+        brand: p.brand || p.model || 'Printer',
+        location: p.location || 'Network Printer',
+        status: statusBadge,
+        toners: p.toners && p.toners.length ? p.toners : []
+      };
+    });
 
     res.json({
       summary: {
@@ -3921,12 +3848,11 @@ async function renderAnalyticsView() {
     const sc = data.scannerUsage || {};
     const pHealth = data.printerHealth || [];
 
-    const maxPrinterPages = 10000;
-    const maxUserPages = Math.max(...pUser.map(u => u.pages), 3500);
-
-    const totalSc = (sc.saneScans || 0) + (sc.cameraScans || 0) || 8945;
-    const sanePct = Math.round(((sc.saneScans || 6215) / totalSc) * 100);
-    const cameraPct = 100 - sanePct;
+    const totalSc = sc.totalScans || 0;
+    const saneSc = sc.saneScans || 0;
+    const cameraSc = sc.cameraScans || 0;
+    const sanePct = totalSc > 0 ? Math.round((saneSc / totalSc) * 100) : 0;
+    const cameraPct = totalSc > 0 ? 100 - sanePct : 0;
 
     const circumference = 2 * Math.PI * 54;
     const saneDash = Math.round((sanePct / 100) * circumference);
@@ -3937,8 +3863,8 @@ async function renderAnalyticsView() {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
             '<div>' +
               '<div style="font-size:0.82rem;color:#94a3b8;font-weight:600;">Total Pages Printed</div>' +
-              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.totalPages || 45821).toLocaleString() + '</div>' +
-              '<div style="font-size:0.76rem;color:#34d399;font-weight:600;">pages <span style="color:#34d399;">(+12.5%)</span></div>' +
+              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.totalPages || 0).toLocaleString() + '</div>' +
+              '<div style="font-size:0.76rem;color:#34d399;font-weight:600;">pages</div>' +
             '</div>' +
             '<div style="width:44px;height:44px;border-radius:12px;background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.35);display:flex;align-items:center;justify-content:center;color:#60a5fa;font-size:1.3rem;">🖨️</div>' +
           '</div>' +
@@ -3952,13 +3878,13 @@ async function renderAnalyticsView() {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
             '<div>' +
               '<div style="font-size:0.82rem;color:#94a3b8;font-weight:600;">Active Printers</div>' +
-              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.activePrinters || 21) + '</div>' +
-              '<div style="font-size:0.76rem;color:#38bdf8;font-weight:600;">online <span style="color:#94a3b8;font-weight:400;">' + (s.totalPrinters || 24) + ' Total</span></div>' +
+              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.activePrinters || 0) + '</div>' +
+              '<div style="font-size:0.76rem;color:#38bdf8;font-weight:600;">online <span style="color:#94a3b8;font-weight:400;">' + (s.totalPrinters || 0) + ' Total</span></div>' +
             '</div>' +
             '<div style="width:44px;height:44px;border-radius:12px;background:rgba(6,182,212,0.15);border:1px solid rgba(6,182,212,0.35);display:flex;align-items:center;justify-content:center;color:#38bdf8;font-size:1.3rem;">🌐</div>' +
           '</div>' +
           '<div style="margin-top:16px;background:rgba(255,255,255,0.05);height:6px;border-radius:999px;overflow:hidden;">' +
-            '<div style="width:' + Math.round(((s.activePrinters||21)/(s.totalPrinters||24))*100) + '%;height:100%;background:linear-gradient(90deg,#06b6d4,#38bdf8);"></div>' +
+            '<div style="width:' + (s.totalPrinters ? Math.round(((s.activePrinters||0)/(s.totalPrinters))*100) : 0) + '%;height:100%;background:linear-gradient(90deg,#06b6d4,#38bdf8);"></div>' +
           '</div>' +
         '</div>' +
 
@@ -3966,8 +3892,8 @@ async function renderAnalyticsView() {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
             '<div>' +
               '<div style="font-size:0.82rem;color:#94a3b8;font-weight:600;">Total Scans Performed</div>' +
-              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (sc.totalScans || s.totalScans || 8945).toLocaleString() + '</div>' +
-              '<div style="font-size:0.76rem;color:#34d399;font-weight:600;">docs <span style="color:#34d399;">(+8.1%)</span></div>' +
+              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (totalSc).toLocaleString() + '</div>' +
+              '<div style="font-size:0.76rem;color:#34d399;font-weight:600;">docs</div>' +
             '</div>' +
             '<div style="width:44px;height:44px;border-radius:12px;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.35);display:flex;align-items:center;justify-content:center;color:#34d399;font-size:1.3rem;">📷</div>' +
           '</div>' +
@@ -3981,8 +3907,8 @@ async function renderAnalyticsView() {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
             '<div>' +
               '<div style="font-size:0.82rem;color:#94a3b8;font-weight:600;">Low Toner Warnings</div>' +
-              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.lowTonerWarnings || 6) + '</div>' +
-              '<div style="font-size:0.76rem;color:#c084fc;font-weight:600;">Alerts <span style="color:#f87171;font-weight:400;">2 critical</span></div>' +
+              '<div style="font-size:1.95rem;font-weight:800;color:#f8fafc;margin:6px 0 2px;">' + (s.lowTonerWarnings || 0) + '</div>' +
+              '<div style="font-size:0.76rem;color:#c084fc;font-weight:600;">Alerts</div>' +
             '</div>' +
             '<div style="width:44px;height:44px;border-radius:12px;background:rgba(168,85,247,0.15);border:1px solid rgba(168,85,247,0.35);display:flex;align-items:center;justify-content:center;color:#c084fc;font-size:1.3rem;">⚠️</div>' +
           '</div>' +
@@ -3993,53 +3919,70 @@ async function renderAnalyticsView() {
         '</div>' +
       '</div>';
 
-    // Vertical Bar Chart with Y-axis grid
-    const printerBars = pPrinter.map(p => {
-      const heightPct = Math.max(10, Math.min(100, Math.round((p.pages / maxPrinterPages) * 100)));
-      return '<div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:55px;z-index:2;">' +
-          '<div style="font-size:0.75rem;font-weight:700;color:#38bdf8;margin-bottom:6px;">' + p.pages.toLocaleString() + '</div>' +
-          '<div style="width:100%;max-width:44px;height:160px;background:rgba(255,255,255,0.02);border-radius:8px 8px 4px 4px;display:flex;align-items:flex-end;padding:2px;border:1px solid rgba(255,255,255,0.04);">' +
-            '<div style="width:100%;height:' + heightPct + '%;background:linear-gradient(180deg,#38bdf8,#0284c7);border-radius:6px 6px 2px 2px;box-shadow:0 0 14px rgba(56,189,248,0.4);transition:height 0.4s ease;"></div>' +
-          '</div>' +
-          '<div style="font-size:0.7rem;color:#cbd5e1;font-weight:600;margin-top:8px;text-align:center;line-height:1.2;width:100%;" title="' + esc(p.name) + '">' + esc(p.name).replace(' Printers','') + '</div>' +
-        '</div>';
-    }).join('');
-
-    const yAxisTicks =
-      '<div style="display:flex;flex-direction:column;justify-content:space-between;height:160px;font-size:0.68rem;color:#64748b;font-weight:500;padding-right:8px;text-align:right;">' +
-        '<div>10,000</div>' +
-        '<div>8,000</div>' +
-        '<div>6,000</div>' +
-        '<div>4,000</div>' +
-        '<div>2,000</div>' +
-        '<div>0</div>' +
-      '</div>';
-
-    const gridLines =
-      '<div style="position:absolute;top:38px;left:45px;right:20px;height:160px;display:flex;flex-direction:column;justify-content:space-between;pointer-events:none;z-index:1;">' +
-        '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
-        '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
-        '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
-        '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
-        '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
-        '<div style="border-top:1px solid rgba(255,255,255,0.12);width:100%;"></div>' +
-      '</div>';
-
-    const userBars = pUser.map(u => {
-      const widthPct = Math.max(10, Math.min(100, Math.round((u.pages / maxUserPages) * 100)));
-      return '<div style="margin-bottom:12px;">' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:0.8rem;">' +
-            '<div style="display:flex;align-items:center;gap:8px;">' +
-              '<span style="width:26px;height:26px;border-radius:50%;background:rgba(59,130,246,0.25);display:flex;align-items:center;justify-content:center;font-size:0.8rem;">' + (u.avatar || '👤') + '</span>' +
-              '<span style="font-weight:600;color:#f1f5f9;">' + esc(u.name) + '</span>' +
+    // Printer Paper Bar Chart
+    let printerBarsContent = '';
+    if (pPrinter.length > 0) {
+      const maxPrinterPages = Math.max(...pPrinter.map(p => p.pages), 1);
+      const printerBars = pPrinter.map(p => {
+        const heightPct = Math.max(10, Math.min(100, Math.round((p.pages / maxPrinterPages) * 100)));
+        return '<div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:55px;z-index:2;">' +
+            '<div style="font-size:0.75rem;font-weight:700;color:#38bdf8;margin-bottom:6px;">' + p.pages.toLocaleString() + '</div>' +
+            '<div style="width:100%;max-width:44px;height:160px;background:rgba(255,255,255,0.02);border-radius:8px 8px 4px 4px;display:flex;align-items:flex-end;padding:2px;border:1px solid rgba(255,255,255,0.04);">' +
+              '<div style="width:100%;height:' + heightPct + '%;background:linear-gradient(180deg,#38bdf8,#0284c7);border-radius:6px 6px 2px 2px;box-shadow:0 0 14px rgba(56,189,248,0.4);transition:height 0.4s ease;"></div>' +
             '</div>' +
-            '<span style="font-weight:700;color:#f8fafc;font-size:0.82rem;">' + u.pages.toLocaleString() + '</span>' +
-          '</div>' +
-          '<div style="background:rgba(255,255,255,0.04);height:10px;border-radius:999px;overflow:hidden;border:1px solid rgba(255,255,255,0.05);">' +
-            '<div style="width:' + widthPct + '%;height:100%;background:linear-gradient(90deg,#10b981,#a855f7);border-radius:999px;box-shadow:0 0 10px rgba(16,185,129,0.3);"></div>' +
+            '<div style="font-size:0.7rem;color:#cbd5e1;font-weight:600;margin-top:8px;text-align:center;line-height:1.2;width:100%;" title="' + esc(p.name) + '">' + esc(p.name) + '</div>' +
+          '</div>';
+      }).join('');
+
+      const maxLabel = maxPrinterPages.toLocaleString();
+      const midLabel = Math.round(maxPrinterPages / 2).toLocaleString();
+      const yAxisTicks =
+        '<div style="display:flex;flex-direction:column;justify-content:space-between;height:160px;font-size:0.68rem;color:#64748b;font-weight:500;padding-right:8px;text-align:right;">' +
+          '<div>' + maxLabel + '</div>' +
+          '<div>' + midLabel + '</div>' +
+          '<div>0</div>' +
+        '</div>';
+
+      const gridLines =
+        '<div style="position:absolute;top:38px;left:45px;right:20px;height:160px;display:flex;flex-direction:column;justify-content:space-between;pointer-events:none;z-index:1;">' +
+          '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
+          '<div style="border-top:1px dashed rgba(255,255,255,0.08);width:100%;"></div>' +
+          '<div style="border-top:1px solid rgba(255,255,255,0.12);width:100%;"></div>' +
+        '</div>';
+
+      printerBarsContent = gridLines +
+        '<div style="display:flex;align-items:flex-end;padding-top:10px;">' +
+          yAxisTicks +
+          '<div style="display:flex;gap:12px;align-items:flex-end;flex:1;overflow-x:auto;z-index:2;">' +
+            printerBars +
           '</div>' +
         '</div>';
-    }).join('');
+    } else {
+      printerBarsContent = '<div style="padding:60px 20px;text-align:center;color:var(--muted);font-size:0.85rem;">Belum ada riwayat cetak per printer</div>';
+    }
+
+    // Top Users Consumption
+    let userBarsContent = '';
+    if (pUser.length > 0) {
+      const maxUserPages = Math.max(...pUser.map(u => u.pages), 1);
+      userBarsContent = pUser.map(u => {
+        const widthPct = Math.max(10, Math.min(100, Math.round((u.pages / maxUserPages) * 100)));
+        return '<div style="margin-bottom:12px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:0.8rem;">' +
+              '<div style="display:flex;align-items:center;gap:8px;">' +
+                '<span style="width:26px;height:26px;border-radius:50%;background:rgba(59,130,246,0.25);display:flex;align-items:center;justify-content:center;font-size:0.8rem;">' + (u.avatar || '👤') + '</span>' +
+                '<span style="font-weight:600;color:#f1f5f9;">' + esc(u.name) + '</span>' +
+              '</div>' +
+              '<span style="font-weight:700;color:#f8fafc;font-size:0.82rem;">' + u.pages.toLocaleString() + '</span>' +
+            '</div>' +
+            '<div style="background:rgba(255,255,255,0.04);height:10px;border-radius:999px;overflow:hidden;border:1px solid rgba(255,255,255,0.05);">' +
+              '<div style="width:' + widthPct + '%;height:100%;background:linear-gradient(90deg,#10b981,#a855f7);border-radius:999px;box-shadow:0 0 10px rgba(16,185,129,0.3);"></div>' +
+            '</div>' +
+          '</div>';
+      }).join('');
+    } else {
+      userBarsContent = '<div style="padding:60px 20px;text-align:center;color:var(--muted);font-size:0.85rem;">Belum ada riwayat cetak per user</div>';
+    }
 
     const middleGrid =
       '<div style="display:grid;grid-template-columns:2.2fr 1.6fr 1.3fr;gap:16px;margin-bottom:24px;flex-wrap:wrap;">' +
@@ -4047,16 +3990,10 @@ async function renderAnalyticsView() {
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
             '<div>' +
               '<h3 style="font-size:0.92rem;font-weight:700;color:#f1f5f9;margin:0;letter-spacing:0.02em;">PAPER USAGE PER PRINTER</h3>' +
-              '<div style="font-size:0.75rem;color:var(--muted);">(Pages Printed, Jul 1 - Jul 14, 2024)</div>' +
+              '<div style="font-size:0.75rem;color:var(--muted);">(Pages Printed)</div>' +
             '</div>' +
           '</div>' +
-          gridLines +
-          '<div style="display:flex;align-items:flex-end;padding-top:10px;">' +
-            yAxisTicks +
-            '<div style="display:flex;gap:12px;align-items:flex-end;flex:1;overflow-x:auto;z-index:2;">' +
-              printerBars +
-            '</div>' +
-          '</div>' +
+          printerBarsContent +
         '</div>' +
 
         '<div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 8px 24px rgba(0,0,0,0.2);">' +
@@ -4064,16 +4001,12 @@ async function renderAnalyticsView() {
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
               '<div>' +
                 '<h3 style="font-size:0.92rem;font-weight:700;color:#f1f5f9;margin:0;letter-spacing:0.02em;">TOP USERS: PAPER CONSUMPTION</h3>' +
-                '<div style="font-size:0.75rem;color:var(--muted);">(Top 5)</div>' +
+                '<div style="font-size:0.75rem;color:var(--muted);">(Top Users)</div>' +
               '</div>' +
             '</div>' +
             '<div>' +
-              userBars +
+              userBarsContent +
             '</div>' +
-          '</div>' +
-          '<div style="display:flex;justify-content:center;gap:6px;margin-top:12px;">' +
-            '<span style="width:6px;height:6px;border-radius:50%;background:#f8fafc;"></span>' +
-            '<span style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,0.2);"></span>' +
           '</div>' +
         '</div>' +
 
@@ -4086,65 +4019,72 @@ async function renderAnalyticsView() {
               '<circle cx="60" cy="60" r="54" fill="none" stroke="#10b981" stroke-width="12" stroke-dasharray="' + saneDash + ' ' + circumference + '" stroke-dashoffset="0" stroke-linecap="round" />' +
             '</svg>' +
             '<div style="position:absolute;text-align:center;">' +
-              '<div style="font-size:1.25rem;font-weight:800;color:#f8fafc;line-height:1;">' + (sc.totalScans || totalSc).toLocaleString() + '</div>' +
+              '<div style="font-size:1.25rem;font-weight:800;color:#f8fafc;line-height:1;">' + (totalSc).toLocaleString() + '</div>' +
               '<div style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;margin-top:2px;">TOTAL SCANS</div>' +
             '</div>' +
           '</div>' +
           '<div style="width:100%;margin-top:16px;font-size:0.76rem;">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
               '<span style="display:flex;align-items:center;gap:6px;color:#e2e8f0;"><span style="width:8px;height:8px;border-radius:50%;background:#10b981;"></span> Hardware SANE</span>' +
-              '<span style="font-weight:700;color:#10b981;">' + (sc.saneScans||6215).toLocaleString() + ' <span style="font-weight:400;color:#34d399;">' + sanePct + '%</span></span>' +
+              '<span style="font-weight:700;color:#10b981;">' + (saneSc).toLocaleString() + ' <span style="font-weight:400;color:#34d399;">' + sanePct + '%</span></span>' +
             '</div>' +
             '<div style="display:flex;justify-content:space-between;align-items:center;">' +
               '<span style="display:flex;align-items:center;gap:6px;color:#e2e8f0;"><span style="width:8px;height:8px;border-radius:50%;background:#a855f7;"></span> Camera Capture</span>' +
-              '<span style="font-weight:700;color:#c084fc;">' + (sc.cameraScans||2730).toLocaleString() + ' <span style="font-weight:400;color:#c084fc;">' + cameraPct + '%</span></span>' +
+              '<span style="font-weight:700;color:#c084fc;">' + (cameraSc).toLocaleString() + ' <span style="font-weight:400;color:#c084fc;">' + cameraPct + '%</span></span>' +
             '</div>' +
           '</div>' +
         '</div>' +
       '</div>';
 
-    const healthCards = pHealth.map(p => {
-      const isOnline = p.status === 'Online';
-      const badgeStyle = isOnline
-        ? 'background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3);'
-        : p.status === 'Low Paper'
-        ? 'background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);'
-        : p.status === 'Low Toner'
-        ? 'background:rgba(168,85,247,0.15);color:#c084fc;border:1px solid rgba(168,85,247,0.3);'
-        : 'background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);';
+    let healthCardsContent = '';
+    if (pHealth.length > 0) {
+      healthCardsContent = pHealth.map(p => {
+        const isOnline = p.status === 'Online';
+        const badgeStyle = isOnline
+          ? 'background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3);'
+          : p.status === 'Low Paper'
+          ? 'background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);'
+          : p.status === 'Low Toner'
+          ? 'background:rgba(168,85,247,0.15);color:#c084fc;border:1px solid rgba(168,85,247,0.3);'
+          : 'background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);';
 
-      const tonerBars = (p.toners || []).map(t => {
-        const warn = t.pct < 20;
-        return '<div style="flex:1;">' +
-            '<div style="display:flex;justify-content:space-between;font-size:0.68rem;color:#94a3b8;margin-bottom:2px;">' +
-              '<span>' + esc(t.name) + '</span>' +
-              '<span style="' + (warn ? 'color:#f87171;font-weight:700;' : '') + '">' + t.pct + '%</span>' +
+        const tonerBars = (p.toners && p.toners.length)
+          ? p.toners.map(t => {
+              const warn = t.pct < 20;
+              return '<div style="flex:1;">' +
+                  '<div style="display:flex;justify-content:space-between;font-size:0.68rem;color:#94a3b8;margin-bottom:2px;">' +
+                    '<span>' + esc(t.name) + '</span>' +
+                    '<span style="' + (warn ? 'color:#f87171;font-weight:700;' : '') + '">' + t.pct + '%</span>' +
+                  '</div>' +
+                  '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:999px;overflow:hidden;">' +
+                    '<div style="width:' + t.pct + '%;height:100%;background:' + (t.color || '#3b82f6') + ';border-radius:999px;"></div>' +
+                  '</div>' +
+                '</div>';
+            }).join('')
+          : '<div style="font-size:0.7rem;color:var(--muted);">Informasi toner tidak tersedia (SNMP)</div>';
+
+        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,0.15);">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+              '<div>' +
+                '<div style="font-weight:700;color:#f8fafc;font-size:0.88rem;">' + esc(p.name) + '</div>' +
+                '<div style="font-size:0.72rem;color:var(--muted);">' + esc(p.location || 'Network Printer') + '</div>' +
+              '</div>' +
+              '<span class="chip" style="font-size:0.7rem;padding:3px 8px;border-radius:6px;' + badgeStyle + '">' + esc(p.status) + '</span>' +
             '</div>' +
-            '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:999px;overflow:hidden;">' +
-              '<div style="width:' + t.pct + '%;height:100%;background:' + (t.color || '#3b82f6') + ';border-radius:999px;"></div>' +
+            '<div style="display:flex;gap:6px;">' +
+              tonerBars +
             '</div>' +
           '</div>';
       }).join('');
-
-      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,0.15);">' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
-            '<div>' +
-              '<div style="font-weight:700;color:#f8fafc;font-size:0.88rem;">' + esc(p.name) + '</div>' +
-              '<div style="font-size:0.72rem;color:var(--muted);">' + esc(p.location || 'Floor 3') + '</div>' +
-            '</div>' +
-            '<span class="chip" style="font-size:0.7rem;padding:3px 8px;border-radius:6px;' + badgeStyle + '">' + esc(p.status) + '</span>' +
-          '</div>' +
-          '<div style="display:flex;gap:6px;">' +
-            tonerBars +
-          '</div>' +
-        '</div>';
-    }).join('');
+    } else {
+      healthCardsContent = '<div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:0.88rem;grid-column:1/-1;">Belum ada printer terkonfigurasi</div>';
+    }
 
     const healthGrid =
       '<div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;box-shadow:0 8px 24px rgba(0,0,0,0.2);">' +
         '<h3 style="font-size:0.92rem;font-weight:700;color:#f1f5f9;margin-bottom:16px;letter-spacing:0.02em;">PRINTER HEALTH & TONER STATUS</h3>' +
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">' +
-          healthCards +
+          healthCardsContent +
         '</div>' +
       '</div>';
 
