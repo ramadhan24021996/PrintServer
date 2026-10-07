@@ -225,8 +225,8 @@ const USER_ALLOWED = [
   /^\/api\/me$/, /^\/api\/logout$/,
   /^\/api\/printers$/, /^\/api\/printers\/refresh$/,
   /^\/api\/cups\/printers$/, /^\/api\/print$/, /^\/api\/cups\/jobs$/,
-  /^\/api\/scans$/, /^\/api\/scans\/download\//, /^\/api\/scans\/devices$/, /^\/api\/scans\/trigger$/,
-  /^\/api\/shared-docs/, /^\/api\/mobile\/print-shared$/,
+  /^\/api\/scans(\/.*)?$/,
+  /^\/api\/shared-docs/, /^\/api\/mobile\/print-shared$/, /^\/api\/mobile\/print-scan$/,
   /^\/api\/mobile\/token$/, /^\/api\/mobile\/qr-image$/,
 ];
 app.get('/bg.jpg', (_req,res) => res.sendFile(path.resolve(__dirname, 'bg.jpg')));
@@ -352,6 +352,22 @@ app.post('/api/mobile/token', express.json(), (req, res) => {
   const targetUsername = req.user.role === 'admin' ? ((req.body && req.body.username) || req.user.username) : req.user.username;
   const user = USERS.find(u => u.username === targetUsername);
   if (!user) return res.status(404).json({error:'User not found'});
+  
+  const rotate = req.body && req.body.rotate === true;
+  let existingToken = null;
+  if (!rotate) {
+    for (const [tok, t] of Object.entries(MOBILE_TOKENS)) {
+      if (t.username === targetUsername && t.exp > Date.now()) {
+        existingToken = tok;
+        break;
+      }
+    }
+  }
+
+  if (existingToken) {
+    return res.json({ ok: true, token: existingToken, serverIp: getServerIp(), isNew: false });
+  }
+
   // Revoke old token for this user
   for (const [tok, t] of Object.entries(MOBILE_TOKENS)) {
     if (t.username === targetUsername) delete MOBILE_TOKENS[tok];
@@ -359,7 +375,7 @@ app.post('/api/mobile/token', express.json(), (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   MOBILE_TOKENS[token] = { username: targetUsername, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 }; // 30 days
   saveMobileTokens();
-  res.json({ ok: true, token, serverIp: getServerIp() });
+  res.json({ ok: true, token, serverIp: getServerIp(), isNew: true });
 });
 
 // ── API: revoke QR token & active mobile sessions ───────────────────────────
@@ -382,57 +398,236 @@ app.delete('/api/mobile/token/:username', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── API: list shared documents ──────────────────────────────────────────────
+// ── Shared Docs Metadata & History Audit Helpers ─────────────────────────────
+const SHARED_DOCS_META_FILE = path.join(SHARED_DOCS_DIR, '.meta.json');
+const SHARED_DOCS_HIST_FILE = path.join(SHARED_DOCS_DIR, '.history.json');
+
+function loadSharedDocsMeta() {
+  try {
+    if (fs.existsSync(SHARED_DOCS_META_FILE)) {
+      return JSON.parse(fs.readFileSync(SHARED_DOCS_META_FILE, 'utf8'));
+    }
+  } catch {}
+  return {};
+}
+
+function saveSharedDocsMeta(meta) {
+  try {
+    fs.writeFileSync(SHARED_DOCS_META_FILE, JSON.stringify(meta, null, 2));
+  } catch (e) {
+    console.error('Failed to save shared docs meta:', e.message);
+  }
+}
+
+function loadSharedDocsHistory() {
+  try {
+    if (fs.existsSync(SHARED_DOCS_HIST_FILE)) {
+      return JSON.parse(fs.readFileSync(SHARED_DOCS_HIST_FILE, 'utf8'));
+    }
+  } catch {}
+  return [];
+}
+
+function logSharedDocAction(action, user, filename, targetUser = 'all', details = '') {
+  try {
+    const history = loadSharedDocsHistory();
+    history.unshift({
+      id: Date.now() + '-' + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toISOString(),
+      action, // 'UPLOAD', 'DOWNLOAD', 'PRINT', 'DELETE'
+      user: user || 'anonymous',
+      filename,
+      targetUser: targetUser || 'all',
+      details
+    });
+    if (history.length > 500) history.length = 500;
+    fs.writeFileSync(SHARED_DOCS_HIST_FILE, JSON.stringify(history, null, 2));
+  } catch (e) {
+    console.error('Failed to log shared doc action:', e.message);
+  }
+}
+
+// ── API: get list of target users ──────────────────────────────────────────
+app.get('/api/shared-docs/targets', (req, res) => {
+  const targets = USERS.map(u => ({ username: u.username, role: u.role }));
+  res.json({ targets });
+});
+
+// ── API: list shared documents with privacy filter & unread badge ────────────
 app.get('/api/shared-docs', async (req, res) => {
   try {
     const files = await fs.promises.readdir(SHARED_DOCS_DIR);
-    const docs = await Promise.all(files.map(async name => {
+    const metaMap = loadSharedDocsMeta();
+    const currentUser = req.user ? req.user.username : 'user';
+    const isAdmin = req.user && req.user.role === 'admin';
+
+    const rawDocs = await Promise.all(files.map(async name => {
+      if (name.startsWith('.')) return null;
       try {
         const stat = await fs.promises.stat(path.join(SHARED_DOCS_DIR, name));
-        return { name, size: stat.size, mtime: stat.mtime };
+        const meta = metaMap[name] || { uploader: 'admin', targetUser: 'all', uploadTime: stat.mtime, downloads: 0, prints: 0 };
+        return {
+          name,
+          size: stat.size,
+          mtime: stat.mtime,
+          uploader: meta.uploader || 'admin',
+          targetUser: meta.targetUser || 'all',
+          uploadTime: meta.uploadTime || stat.mtime,
+          downloads: meta.downloads || 0,
+          prints: meta.prints || 0
+        };
       } catch { return null; }
     }));
-    res.json({ docs: docs.filter(Boolean) });
-  } catch { res.json({ docs: [] }); }
+
+    const validDocs = rawDocs.filter(Boolean);
+
+    // Privacy Filter
+    const docs = isAdmin ? validDocs : validDocs.filter(d => 
+      d.targetUser === 'all' || d.targetUser === currentUser || d.uploader === currentUser
+    );
+
+    // Unread count (private docs for currentUser that haven't been downloaded or printed)
+    const unreadCount = validDocs.filter(d => 
+      d.targetUser === currentUser && d.uploader !== currentUser && (d.downloads === 0 && d.prints === 0)
+    ).length;
+
+    res.json({ docs, unreadCount, currentUser });
+  } catch { res.json({ docs: [], unreadCount: 0 }); }
 });
 
-// ── API: upload shared doc (admin) ──────────────────────────────────────────
+// ── API: upload shared doc (available to all logged-in users) ───────────────
 const sharedUpload = multer({ dest: SHARED_DOCS_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 app.post('/api/shared-docs', sharedUpload.single('file'), async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({error:'Admin only'});
-  if (!req.file) return res.status(400).json({error:'No file'});
-  const safeName = path.basename(req.file.originalname).replace(/[^a-zA-Z0-9.\-_ ]/g,'_');
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const targetUser = (req.body.targetUser || 'all').trim();
+  const uploader = req.user ? req.user.username : 'user';
+  const safeName = path.basename(req.file.originalname).replace(/[^a-zA-Z0-9.\-_ ]/g, '_');
   const dest = path.join(SHARED_DOCS_DIR, safeName);
+
   try {
     await fs.promises.rename(req.file.path, dest);
-    res.json({ ok: true, name: safeName });
-  } catch(e) { res.status(500).json({error: e.message}); }
+    
+    // Save metadata
+    const metaMap = loadSharedDocsMeta();
+    metaMap[safeName] = {
+      uploader,
+      targetUser,
+      uploadTime: new Date().toISOString(),
+      originalName: req.file.originalname,
+      downloads: 0,
+      prints: 0
+    };
+    saveSharedDocsMeta(metaMap);
+
+    // Audit log
+    logSharedDocAction('UPLOAD', uploader, safeName, targetUser, `Dokumen diunggah untuk: ${targetUser}`);
+
+    res.json({ ok: true, name: safeName, targetUser, uploader });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// ── API: delete shared doc (admin) ─────────────────────────────────────────
-app.delete('/api/shared-docs/:name', async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({error:'Admin only'});
+// ── API: download shared doc (with privacy check & history logging) ─────────
+app.get('/api/shared-docs/download/:name', async (req, res) => {
   const name = path.basename(req.params.name);
-  try { await fs.promises.unlink(path.join(SHARED_DOCS_DIR, name)); res.json({ok:true}); }
-  catch { res.status(404).json({error:'not found'}); }
+  const full = path.join(SHARED_DOCS_DIR, name);
+  const currentUser = req.user ? req.user.username : 'user';
+  const isAdmin = req.user && req.user.role === 'admin';
+  const metaMap = loadSharedDocsMeta();
+  const meta = metaMap[name] || { uploader: 'admin', targetUser: 'all' };
+
+  // Privacy Check
+  if (!isAdmin && meta.targetUser !== 'all' && meta.targetUser !== currentUser && meta.uploader !== currentUser) {
+    return res.status(403).json({ error: 'Akses ditolak: Dokumen ini bersifat privat' });
+  }
+
+  try {
+    await fs.promises.access(full);
+    
+    // Update download counter & log
+    meta.downloads = (meta.downloads || 0) + 1;
+    metaMap[name] = meta;
+    saveSharedDocsMeta(metaMap);
+    logSharedDocAction('DOWNLOAD', currentUser, name, meta.targetUser, 'Mengunduh file');
+
+    if (req.query.inline === '1' && /\.(pdf|jpe?g|png|txt)$/i.test(name)) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+      return res.sendFile(path.resolve(full));
+    }
+    res.download(full);
+  } catch {
+    res.status(404).json({ error: 'File tidak ditemukan' });
+  }
+});
+
+// ── API: delete shared doc (admin or uploader) ──────────────────────────────
+app.delete('/api/shared-docs/:name', async (req, res) => {
+  const name = path.basename(req.params.name);
+  const currentUser = req.user ? req.user.username : 'user';
+  const isAdmin = req.user && req.user.role === 'admin';
+  const metaMap = loadSharedDocsMeta();
+  const meta = metaMap[name] || { uploader: 'admin', targetUser: 'all' };
+
+  if (!isAdmin && meta.uploader !== currentUser) {
+    return res.status(403).json({ error: 'Hanya pengirim file atau admin yang dapat menghapus' });
+  }
+
+  try {
+    await fs.promises.unlink(path.join(SHARED_DOCS_DIR, name));
+    delete metaMap[name];
+    saveSharedDocsMeta(metaMap);
+    logSharedDocAction('DELETE', currentUser, name, meta.targetUser, 'Menghapus dokumen');
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Gagal menghapus dokumen' });
+  }
+});
+
+// ── API: shared docs audit history ──────────────────────────────────────────
+app.get('/api/shared-docs/history', (req, res) => {
+  const history = loadSharedDocsHistory();
+  const currentUser = req.user ? req.user.username : 'user';
+  const isAdmin = req.user && req.user.role === 'admin';
+
+  const docsHistory = isAdmin ? history : history.filter(h => 
+    h.user === currentUser || h.targetUser === currentUser || h.targetUser === 'all'
+  );
+
+  res.json({ history: docsHistory });
 });
 
 // ── API: print shared doc by name ──────────────────────────────────────────
 app.post('/api/mobile/print-shared', express.json(), async (req, res) => {
   const { docName, copies, duplex, color, printer } = req.body || {};
   if (!docName) return res.status(400).json({error:'docName required'});
-  const filePath = path.join(SHARED_DOCS_DIR, path.basename(docName));
+  const name = path.basename(docName);
+  const filePath = path.join(SHARED_DOCS_DIR, name);
+  const currentUser = req.user ? req.user.username : 'user';
+  const isAdmin = req.user && req.user.role === 'admin';
+  const metaMap = loadSharedDocsMeta();
+  const meta = metaMap[name] || { uploader: 'admin', targetUser: 'all' };
+
+  // Privacy Check
+  if (!isAdmin && meta.targetUser !== 'all' && meta.targetUser !== currentUser && meta.uploader !== currentUser) {
+    return res.status(403).json({ error: 'Akses ditolak: Dokumen ini bersifat privat' });
+  }
+
   try { await fs.promises.access(filePath); } catch { return res.status(404).json({error:'Document not found'}); }
   // Find printer assigned to this user
   const allowedNames = getAllowedPrinterNames(req.user);
   let printerName = null;
-  if (printer && isPrinterNameAllowed(req.user, printer)) {
+  if (printer) {
+    if (!isPrinterNameAllowed(req.user, printer)) {
+      return res.status(403).json({error:'Not permitted to print to this printer'});
+    }
     printerName = printer;
   } else if (allowedNames === null) {
     // admin or unrestricted — use CUPS default
     try {
       const { stdout } = await new Promise((resolve, reject) =>
-        exec('lpstat -d 2>/dev/null', (e, o, er) => e ? reject(er) : resolve({stdout: o}))
+        exec('LC_ALL=C lpstat -d 2>/dev/null', (e, o, er) => e ? reject(er) : resolve({stdout: o}))
       );
       const m = stdout.match(/system default destination:\s+(.+)/);
       printerName = m ? m[1].trim() : null;
@@ -440,7 +635,7 @@ app.post('/api/mobile/print-shared', express.json(), async (req, res) => {
   } else {
     // Get first allowed CUPS printer name
     const cupsRes = await new Promise(resolve =>
-      exec('lpstat -p 2>/dev/null', (e, o) => resolve(o||''))
+      exec('LC_ALL=C lpstat -p 2>/dev/null', (e, o) => resolve(o||''))
     );
     const cupsLines = cupsRes.split('\n').map(l => {
       const m = l.match(/^printer (\S+)/); return m ? m[1] : null;
@@ -451,6 +646,52 @@ app.post('/api/mobile/print-shared', express.json(), async (req, res) => {
   try {
     const result = await printFile(filePath, printerName, copies||1, duplex||'none', color||'', docName);
     if (result.jobId) recordJobMetadata(result.jobId, docName, req.user.username);
+    meta.prints = (meta.prints || 0) + 1;
+    metaMap[name] = meta;
+    saveSharedDocsMeta(metaMap);
+    logSharedDocAction('PRINT', currentUser, name, meta.targetUser, `Cetak ke printer: ${printerName}`);
+    res.json({ok:true, printer: printerName, ...result});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// ── API: print scanned file by name ──────────────────────────────────────────
+app.post('/api/mobile/print-scan', express.json(), async (req, res) => {
+  const { scanName, copies, duplex, color, printer } = req.body || {};
+  if (!scanName) return res.status(400).json({error:'scanName required'});
+  const filePath = path.join(SCAN_DIR, path.basename(scanName));
+  try { await fs.promises.access(filePath); } catch { return res.status(404).json({error:'Scanned file not found'}); }
+
+  // Find printer assigned to this user
+  const allowedNames = getAllowedPrinterNames(req.user);
+  let printerName = null;
+  if (printer) {
+    if (!isPrinterNameAllowed(req.user, printer)) {
+      return res.status(403).json({error:'Not permitted to print to this printer'});
+    }
+    printerName = printer;
+  } else if (allowedNames === null) {
+    // admin or unrestricted — use CUPS default
+    try {
+      const { stdout } = await new Promise((resolve, reject) =>
+        exec('LC_ALL=C lpstat -d 2>/dev/null', (e, o, er) => e ? reject(er) : resolve({stdout: o}))
+      );
+      const m = stdout.match(/system default destination:\s+(.+)/);
+      printerName = m ? m[1].trim() : null;
+    } catch {}
+  } else {
+    // Get first allowed CUPS printer name
+    const cupsRes = await new Promise(resolve =>
+      exec('LC_ALL=C lpstat -p 2>/dev/null', (e, o) => resolve(o||''))
+    );
+    const cupsLines = cupsRes.split('\n').map(l => {
+      const m = l.match(/^printer (\S+)/); return m ? m[1] : null;
+    }).filter(Boolean);
+    printerName = cupsLines.find(n => allowedNames.has(n.toLowerCase())) || null;
+  }
+  if (!printerName) return res.status(400).json({error:'No printer assigned to this user. Please contact admin.'});
+  try {
+    const result = await printFile(filePath, printerName, copies||1, duplex||'none', color||'', scanName);
+    if (result.jobId) recordJobMetadata(result.jobId, scanName, req.user.username);
     res.json({ok:true, printer: printerName, ...result});
   } catch(e) { res.status(500).json({error:e.message}); }
 });
@@ -470,7 +711,7 @@ app.get('/mobile', async (req, res) => {
         const sObj = sessions.get(sessToken);
         if (sObj) { sObj.isMobile = true; saveSessions(); }
         res.setHeader('Set-Cookie', `session=${sessToken}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_MS/1000}; SameSite=Lax`);
-        mobileUser = user;
+        return res.redirect('/mobile');
       }
     }
   } else {
@@ -560,6 +801,8 @@ app.get('/mobile', async (req, res) => {
   /* Page views */
   .page-view{display:none}
   .page-view.active{display:block}
+  /* Print page: reserve room for fixed print bar (~76px @ bottom:60px) + bottom nav, on top of body's 80px */
+  #page-print{padding-bottom:80px}
   /* Scans panel */
   .scan-item{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)}
   .scan-item:last-child{border-bottom:none}
@@ -571,6 +814,9 @@ app.get('/mobile', async (req, res) => {
   .scan-btn{width:36px;height:36px;border-radius:10px;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1rem;transition:.15s;-webkit-tap-highlight-color:transparent;text-decoration:none}
   .scan-btn.preview{background:rgba(59,130,246,.15);color:#60a5fa}
   .scan-btn.download{background:rgba(34,197,94,.15);color:#34d399}
+  .scan-btn.print{background:rgba(99,102,241,.18);color:#a5b4fc}
+  .scan-btn.share{background:rgba(234,179,8,.18);color:#facc15}
+  .scan-btn.delete{background:rgba(239,68,68,.18);color:#f87171}
   .scan-btn:active{transform:scale(.9)}
   .scan-count{background:rgba(59,130,246,.15);color:#60a5fa;border-radius:20px;padding:2px 10px;font-size:.72rem;font-weight:700}
   .scan-refresh-btn{background:transparent;border:1px solid rgba(255,255,255,.12);color:#94a3b8;border-radius:8px;padding:4px 10px;font-size:.72rem;cursor:pointer;display:flex;align-items:center;gap:4px}
@@ -621,7 +867,9 @@ app.get('/mobile', async (req, res) => {
   <div class="card">
     <div class="card-body">
       <div class="tabs">
-        <button class="tab-btn active" id="tab-server" onclick="switchDocTab('server')">📁 Server Docs</button>
+        <button class="tab-btn active" id="tab-server" onclick="switchDocTab('server')">
+          📁 Server Docs <span class="badge" id="shared-docs-badge" style="display:none;background:#ef4444;color:#fff;font-size:0.68rem;padding:2px 6px;border-radius:10px;margin-left:4px;"></span>
+        </button>
         <button class="tab-btn" id="tab-upload" onclick="switchDocTab('upload')">📤 Upload from HP</button>
       </div>
 
@@ -641,6 +889,12 @@ app.get('/mobile', async (req, res) => {
         <div class="selected-file" id="selected-file-info">
           <span id="selected-file-name">—</span>
           <span style="color:#94a3b8;font-size:.72rem" id="selected-file-size"></span>
+        </div>
+        <div class="opt-field" style="margin-top:10px;">
+          <label style="font-size:.75rem;color:#94a3b8;font-weight:600;">Kirim Ke (Target Penerima Privasi)</label>
+          <select id="upload-target-user" style="width:100%;background:#0f172a;border:1px solid rgba(255,255,255,.2);color:#f1f5f9;padding:8px 10px;border-radius:8px;font-size:.82rem">
+            <option value="all">🌐 Semua User (Publik)</option>
+          </select>
         </div>
       </div>
     </div>
@@ -687,6 +941,38 @@ app.get('/mobile', async (req, res) => {
 <!-- ═══ PAGE: SCANS ═══ -->
 <div class="page-view" id="page-scans">
 <div class="section">
+  <div class="card" style="margin-bottom:12px;">
+    <div class="card-header"><h2>🖨 Remote Scanner (Scan to HP)</h2></div>
+    <div class="card-body" style="padding:12px 16px;">
+      <div class="opts-grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div class="opt-field" style="grid-column:1 / -1;">
+          <label>Pilih Scanner</label>
+          <select id="mobile-scan-device"><option value="">Memuat scanner…</option></select>
+        </div>
+        <div class="opt-field">
+          <label>Sumber Kertas</label>
+          <select id="mobile-scan-source">
+            <option value="Flatbed">Flatbed (Kaca)</option>
+            <option value="ADF">ADF Simplex</option>
+            <option value="ADF Duplex">ADF Duplex</option>
+          </select>
+        </div>
+        <div class="opt-field" style="display:flex;align-items:flex-end;">
+          <button class="scan-refresh-btn" style="width:100%;height:35px;justify-content:center;background:rgba(59,130,246,.18);color:#60a5fa;border-color:rgba(59,130,246,.3);font-weight:700;" onclick="triggerMobileScanNow()" id="mobile-scan-now-btn">
+            🖨 Scan Now
+          </button>
+        </div>
+        <div class="opt-field" style="grid-column:1 / -1;margin-top:4px;border-top:1px dashed rgba(255,255,255,0.1);padding-top:10px;">
+          <input type="file" id="mobile-cam-input" accept="image/*,application/pdf" capture="environment" style="display:none" onchange="uploadMobileCamScan(this)">
+          <button class="scan-refresh-btn" style="width:100%;height:38px;justify-content:center;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;font-weight:700;border-radius:8px;" onclick="document.getElementById('mobile-cam-input').click()" id="mobile-cam-btn">
+            📷 Scan / Foto Dokumen via Kamera HP
+          </button>
+        </div>
+      </div>
+      <div id="mobile-scan-status"></div>
+    </div>
+  </div>
+
   <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
     <span>📄 Hasil Scan</span>
     <div style="display:flex;align-items:center;gap:8px">
@@ -728,31 +1014,67 @@ let selectedUploadFile = null;
 let assignedPrinter = null;
 
 // ── Resolve assigned printer ──────────────────────────────────────────────
+// Map CUPS state from /api/cups/printers/detail ("is idle" | "now printing" | "disabled")
+function printerStateLabel(state) {
+  const s = String(state || '').toLowerCase();
+  if (s.includes('disabled')) return 'Disabled';
+  if (s.includes('printing')) return 'Printing';
+  return 'Ready';
+}
+const PRINTER_PREF_KEY = 'ps-mobile-printer';
+function isPrinterOff(p) { return String(p && p.state || '').toLowerCase().includes('disabled'); }
+function loadPrinterPref() { try { return localStorage.getItem(PRINTER_PREF_KEY) || ''; } catch { return ''; } }
+function savePrinterPref(name) { try { localStorage.setItem(PRINTER_PREF_KEY, name); } catch {} }
+let printerList = [];
+function updatePrinterLabel() {
+  const p = printerList.find(x => x.name === assignedPrinter);
+  document.getElementById('printer-name-label').textContent =
+    p ? p.name + ' (' + printerStateLabel(p.state) + ')' : (assignedPrinter || '');
+}
 async function resolveAssignedPrinter() {
   try {
     const r = await fetch('/api/cups/printers/detail');
     const d = await r.json();
-    const printers = d.printers || [];
+    const def = d.defaultPrinter;
+    // Same ordering as dashboard: enabled first, CUPS default first, then A–Z
+    const printers = (d.printers || []).slice().sort((a, b) => {
+      const aOn = !isPrinterOff(a), bOn = !isPrinterOff(b);
+      if (aOn !== bOn) return aOn ? -1 : 1;
+      if (a.name === def) return -1;
+      if (b.name === def) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    printerList = printers;
     const selectEl = document.getElementById('printer-select');
     const selectWrap = document.getElementById('printer-select-wrapper');
     const nameLabel = document.getElementById('printer-name-label');
 
-    if (printers.length > 0) {
-      if (printers.length > 1) {
-        selectWrap.style.display = 'block';
-        selectEl.innerHTML = printers.map(p => '<option value="' + escHtml(p.name) + '">' + escHtml(p.name) + ' (' + (p.status||'Ready') + ')</option>').join('');
-        assignedPrinter = printers[0].name;
-        nameLabel.textContent = assignedPrinter;
-      } else {
-        selectWrap.style.display = 'none';
-        assignedPrinter = printers[0].name;
-        nameLabel.textContent = assignedPrinter + ' (CUPS)';
-      }
-    } else {
+    if (!printers.length) {
       selectWrap.style.display = 'none';
       assignedPrinter = null;
       nameLabel.textContent = 'Tidak Ada Printer Assigned / Aktif';
+      return;
     }
+
+    // Pick: last choice on this device → CUPS default → first enabled → first
+    const usable = name => printers.some(p => p.name === name && !isPrinterOff(p));
+    const saved = loadPrinterPref();
+    const firstOn = printers.find(p => !isPrinterOff(p));
+    assignedPrinter = usable(saved) ? saved
+      : usable(def) ? def
+      : (firstOn || printers[0]).name;
+
+    if (printers.length > 1) {
+      selectWrap.style.display = 'block';
+      selectEl.innerHTML = printers.map(p =>
+        '<option value="' + escHtml(p.name) + '">' + escHtml(p.name) +
+        (p.name === def ? ' ★' : '') + ' (' + printerStateLabel(p.state) + ')</option>'
+      ).join('');
+      selectEl.value = assignedPrinter;
+    } else {
+      selectWrap.style.display = 'none';
+    }
+    updatePrinterLabel();
   } catch {
     document.getElementById('printer-name-label').textContent = 'Gagal memuat printer';
   }
@@ -760,32 +1082,89 @@ async function resolveAssignedPrinter() {
 
 function onPrinterSelected(val) {
   assignedPrinter = val;
-  document.getElementById('printer-name-label').textContent = val;
+  savePrinterPref(val);
+  updatePrinterLabel();
 }
 
 // ── Server docs ───────────────────────────────────────────────────────────
+async function loadSharedDocTargets() {
+  try {
+    const r = await fetch('/api/shared-docs/targets');
+    const d = await r.json();
+    const sel = document.getElementById('upload-target-user');
+    if (sel && d.targets) {
+      sel.innerHTML = '<option value="all">🌐 Semua User (Publik)</option>' +
+        d.targets.map(u => '<option value="' + escHtml(u.username) + '">🔒 ' + escHtml(u.username) + '</option>').join('');
+    }
+  } catch {}
+}
+
 async function loadServerDocs() {
   try {
     const r = await fetch('/api/shared-docs');
     const d = await r.json();
     const docs = d.docs || [];
     const list = document.getElementById('docs-list');
+    
+    // Update badge
+    const badge = document.getElementById('shared-docs-badge');
+    if (badge) {
+      if (d.unreadCount > 0) {
+        badge.style.display = 'inline-block';
+        badge.textContent = '📩 ' + d.unreadCount + ' Baru';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
     if (!docs.length) {
       list.innerHTML = '<div class="empty-docs"><div class="ei">📂</div>Belum ada dokumen di server.<br>Minta admin untuk upload dokumen.</div>';
       return;
     }
+
     list.innerHTML = docs.map(doc => {
       const ext = doc.name.split('.').pop().toLowerCase();
       const icons = {pdf:'📕',doc:'📘',docx:'📘',dot:'📘',dotx:'📘',docm:'📘',rtf:'📄',odt:'📄',txt:'📄',jpg:'🖼',jpeg:'🖼',png:'🖼',xls:'📊',xlsx:'📊',ppt:'📊',pptx:'📊'};
       const iconClass = {pdf:'pdf',doc:'doc',docx:'doc',dot:'doc',dotx:'doc',docm:'doc',rtf:'txt',odt:'txt',txt:'txt',jpg:'img',jpeg:'img',png:'img',xls:'doc',xlsx:'doc',ppt:'doc',pptx:'doc'};
-      return \`<div class="doc-item" id="ditem-\${escJs(doc.name)}" onclick="selectServerDoc('\${escJs(doc.name)}')">
-        <div class="doc-icon \${iconClass[ext]||'txt'}">\${icons[ext]||'📄'}</div>
-        <div class="doc-name">\${escHtml(doc.name)}</div>
-        <div class="doc-size">\${fmtSize(doc.size)}</div>
-      </div>\`;
+      const isTargetMe = doc.targetUser === d.currentUser;
+      const isPublic = doc.targetUser === 'all';
+      const targetTag = isPublic 
+        ? '<span style="font-size:.65rem;background:rgba(59,130,246,.2);color:#60a5fa;padding:1px 5px;border-radius:4px;">🌐 Publik</span>'
+        : '<span style="font-size:.65rem;background:rgba(234,179,8,.2);color:#fde047;padding:1px 5px;border-radius:4px;">🔒 Privat (' + (isTargetMe ? 'Untuk Anda' : 'Dari: ' + escHtml(doc.uploader)) + ')</span>';
+
+      return '<div class="doc-item" id="ditem-' + escJs(doc.name) + '" onclick="selectServerDoc(\\\'' + escJs(doc.name) + '\\\')">' +
+        '<div class="doc-icon ' + (iconClass[ext]||'txt') + '">' + (icons[ext]||'📄') + '</div>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div class="doc-name">' + escHtml(doc.name) + '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">' +
+            '<div class="doc-size">' + fmtSize(doc.size) + '</div>' +
+            targetTag +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:4px;" onclick="event.stopPropagation()">' +
+          '<a class="scan-btn download" href="/api/shared-docs/download/' + encodeURIComponent(doc.name) + '" download title="Download">⬇</a>' +
+          '<button class="scan-btn delete" onclick="deleteSharedDocFromMobile(\\\'' + escJs(doc.name) + '\\\')" title="Hapus">🗑</button>' +
+        '</div>' +
+      '</div>';
     }).join('');
   } catch {
     document.getElementById('docs-list').innerHTML = '<div class="empty-docs">Gagal memuat dokumen</div>';
+  }
+}
+
+async function deleteSharedDocFromMobile(name) {
+  if (!confirm('Hapus dokumen bersama: "' + name + '"?')) return;
+  try {
+    const r = await fetch('/api/shared-docs/' + encodeURIComponent(name), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('🗑 Dokumen berhasil dihapus', 'ok');
+      loadServerDocs();
+    } else {
+      throw new Error(d.error || 'Gagal menghapus dokumen');
+    }
+  } catch(e) {
+    showToast('❌ ' + e.message, 'err');
   }
 }
 
@@ -795,6 +1174,8 @@ function selectServerDoc(name) {
   if (el) el.classList.add('selected');
   selectedServerDoc = name;
   selectedUploadFile = null;
+  const info = document.getElementById('selected-file-info');
+  if (info) info.style.display = 'none';
   updatePrintBtn();
 }
 
@@ -804,6 +1185,7 @@ function switchDocTab(tab) {
   document.getElementById('tab-upload').classList.toggle('active', tab==='upload');
   document.getElementById('panel-server').classList.toggle('active', tab==='server');
   document.getElementById('panel-upload').classList.toggle('active', tab==='upload');
+  updatePrintBtn();
 }
 
 // ── Upload ────────────────────────────────────────────────────────────────
@@ -824,10 +1206,10 @@ function onFileSelected(input) {
 function updatePrintBtn() {
   const btn = document.getElementById('print-btn');
   const label = document.getElementById('print-btn-label');
-  if (selectedServerDoc || selectedUploadFile) {
+  const activeDocName = docTab === 'server' ? selectedServerDoc : (selectedUploadFile ? selectedUploadFile.name : null);
+  if (activeDocName) {
     btn.disabled = false;
-    const name = selectedServerDoc || selectedUploadFile.name;
-    label.textContent = 'Print: ' + name.substring(0, 28) + (name.length > 28 ? '…' : '');
+    label.textContent = 'Print: ' + activeDocName.substring(0, 28) + (activeDocName.length > 28 ? '…' : '');
   } else {
     btn.disabled = true;
     label.textContent = 'Pilih Dokumen Dahulu';
@@ -848,7 +1230,7 @@ async function doPrint() {
     const color  = document.getElementById('opt-color').value;
     let res, d;
 
-    if (selectedServerDoc) {
+    if (docTab === 'server' && selectedServerDoc) {
       // Print from server doc
       res = await fetch('/api/mobile/print-shared', {
         method: 'POST',
@@ -856,7 +1238,7 @@ async function doPrint() {
         body: JSON.stringify({ docName: selectedServerDoc, copies, duplex, color, printer: assignedPrinter })
       });
       d = await res.json();
-    } else if (selectedUploadFile) {
+    } else if (docTab === 'upload' && selectedUploadFile) {
       // Upload then print
       const fd = new FormData();
       fd.append('file', selectedUploadFile);
@@ -867,10 +1249,18 @@ async function doPrint() {
       fd.append('printer', assignedPrinter);
       res = await fetch('/api/print', { method:'POST', body: fd });
       d = await res.json();
+    } else {
+      throw new Error('Silakan pilih dokumen terlebih dahulu');
     }
 
     if (d && d.ok) {
-      showToast('✅ Berhasil dikirim ke printer! Job: ' + (d.jobId||'queued'), 'ok');
+      const activeDocName = docTab === 'server' ? selectedServerDoc : (selectedUploadFile ? selectedUploadFile.name : '');
+      showPrintSuccessModal({
+        title: 'Successfully',
+        docName: activeDocName,
+        printerName: d.printer || assignedPrinter || '',
+        jobId: d.jobId || 'queued'
+      });
       selectedServerDoc = null;
       selectedUploadFile = null;
       document.querySelectorAll('.doc-item').forEach(el => el.classList.remove('selected'));
@@ -881,6 +1271,7 @@ async function doPrint() {
     }
   } catch(e) {
     showToast('❌ ' + e.message, 'err');
+    showPrintErrorModal({ title: 'Failed', message: e.message });
   } finally {
     document.getElementById('print-btn-icon').outerHTML = '<span id="print-btn-icon">🖨</span>';
     updatePrintBtn();
@@ -899,6 +1290,116 @@ function showToast(msg, type) {
   setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
+function showPrintSuccessModal({ title = 'Successfully', docName = '', printerName = '', jobId = '', message = '' }) {
+  const old = document.getElementById('print-success-modal-overlay');
+  if (old) old.remove();
+
+  if (!document.getElementById('print-success-style')) {
+    const st = document.createElement('style');
+    st.id = 'print-success-style';
+    st.textContent =
+      '@keyframes popInModal { 0% { opacity:0; transform:scale(0.8); } 70% { transform:scale(1.05); } 100% { opacity:1; transform:scale(1); } }' +
+      '@keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }';
+    document.head.appendChild(st);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'print-success-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeInModal 0.2s ease-out;';
+
+  const defaultMsg = (docName ? 'Dokumen <strong>' + escHtml(docName) + '</strong>' : 'Dokumen')
+    + (printerName ? ' berhasil dikirim ke printer <strong>' + escHtml(printerName) + '</strong>.' : ' berhasil dikirim ke printer.')
+    + (jobId ? '<br><span style="font-size:0.78rem;color:#64748b;margin-top:6px;display:inline-block;background:#f1f5f9;padding:2px 8px;border-radius:6px;">Job ID: #' + escHtml(jobId) + '</span>' : '');
+
+  const finalMsg = message || defaultMsg;
+
+  overlay.innerHTML =
+    '<div style="background:#ffffff;color:#1e293b;border-radius:24px;width:100%;max-width:360px;text-align:center;position:relative;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;animation:popInModal 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);font-family:system-ui,sans-serif;">'
+      + '<div style="background:#f8fafc;padding:32px 20px 20px;position:relative;display:flex;justify-content:center;align-items:center;">'
+        + '<svg style="position:absolute;top:16px;left:40px;width:22px;height:22px;color:#3b82f6;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10"/></svg>'
+        + '<svg style="position:absolute;top:12px;right:45px;width:26px;height:26px;color:#ef4444;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 8-8"/></svg>'
+        + '<svg style="position:absolute;bottom:14px;left:50px;width:18px;height:18px;color:#a855f7;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 22a10 10 0 0 0 10-10"/></svg>'
+
+        + '<div style="width:72px;height:72px;background:#22c55e;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 20px rgba(34,197,94,0.35);position:relative;z-index:2;">'
+          + '<svg style="width:40px;height:40px;color:#ffffff;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">'
+            + '<polyline points="20 6 9 17 4 12"></polyline>'
+          + '</svg>'
+        + '</div>'
+      + '</div>'
+
+      + '<div style="padding:10px 24px 20px;">'
+        + '<h2 style="margin:0 0 10px;font-size:1.7rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">' + escHtml(title) + '</h2>'
+        + '<div style="font-size:0.9rem;color:#64748b;line-height:1.5;">' + finalMsg + '</div>'
+      + '</div>'
+
+      + '<div style="padding:0 24px 24px;">'
+        + '<button style="width:100%;padding:14px;background:#e2e8f0;color:#0f172a;border:none;border-radius:14px;font-size:1.05rem;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);transition:background 0.2s;" onclick="closePrintSuccessModal()">'
+          + 'Oke'
+        + '</button>'
+      + '</div>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePrintSuccessModal(); });
+}
+
+function closePrintSuccessModal() {
+  const o = document.getElementById('print-success-modal-overlay');
+  if (o) o.remove();
+}
+
+function showPrintErrorModal({ title = 'Failed', message = 'Terjadi kesalahan saat memproses permintaan.' }) {
+  const old = document.getElementById('print-error-modal-overlay');
+  if (old) old.remove();
+
+  if (!document.getElementById('print-success-style')) {
+    const st = document.createElement('style');
+    st.id = 'print-success-style';
+    st.textContent =
+      '@keyframes popInModal { 0% { opacity:0; transform:scale(0.8); } 70% { transform:scale(1.05); } 100% { opacity:1; transform:scale(1); } }' +
+      '@keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }';
+    document.head.appendChild(st);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'print-error-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeInModal 0.2s ease-out;';
+
+  overlay.innerHTML =
+    '<div style="background:#ffffff;color:#1e293b;border-radius:24px;width:100%;max-width:360px;text-align:center;position:relative;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;animation:popInModal 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);font-family:system-ui,sans-serif;">'
+      + '<div style="background:#fef2f2;padding:32px 20px 20px;position:relative;display:flex;justify-content:center;align-items:center;">'
+        + '<svg style="position:absolute;top:16px;left:40px;width:22px;height:22px;color:#f59e0b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+        + '<svg style="position:absolute;top:12px;right:45px;width:26px;height:26px;color:#ef4444;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 9v4m0 4h.01"/></svg>'
+
+        + '<div style="width:72px;height:72px;background:#ef4444;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 20px rgba(239,68,68,0.35);position:relative;z-index:2;">'
+          + '<svg style="width:38px;height:38px;color:#ffffff;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">'
+            + '<line x1="18" y1="6" x2="6" y2="18"></line>'
+            + '<line x1="6" y1="6" x2="18" y2="18"></line>'
+          + '</svg>'
+        + '</div>'
+      + '</div>'
+
+      + '<div style="padding:10px 24px 20px;">'
+        + '<h2 style="margin:0 0 10px;font-size:1.7rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">' + escHtml(title) + '</h2>'
+        + '<div style="font-size:0.9rem;color:#64748b;line-height:1.5;">' + escHtml(message) + '</div>'
+      + '</div>'
+
+      + '<div style="padding:0 24px 24px;">'
+        + '<button style="width:100%;padding:14px;background:#fee2e2;color:#991b1b;border:none;border-radius:14px;font-size:1.05rem;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);transition:background 0.2s;" onclick="closePrintErrorModal()">'
+          + 'Tutup'
+        + '</button>'
+      + '</div>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePrintErrorModal(); });
+}
+
+function closePrintErrorModal() {
+  const o = document.getElementById('print-error-modal-overlay');
+  if (o) o.remove();
+}
+
 // ── Page switching ────────────────────────────────────────────────────────
 let currentPage = 'print';
 function switchPage(page) {
@@ -907,7 +1408,7 @@ function switchPage(page) {
   document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
   document.getElementById('nav-' + page).classList.add('active');
-  if (page === 'scans') loadMobileScans();
+  if (page === 'scans') { loadMobileScans(); loadMobileScanDevices(); }
 }
 
 // ── Mobile Scans ──────────────────────────────────────────────────────────
@@ -931,11 +1432,14 @@ async function loadMobileScans() {
         '<div class="scan-icon">' + (icons[ext]||'📄') + '</div>' +
         '<div class="scan-info">' +
           '<div class="scan-name">' + escHtml(s.name) + '</div>' +
-          '<div class="scan-meta">' + fmtSize(s.size) + (s.date ? ' • ' + new Date(s.date).toLocaleString('id-ID',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '') + '</div>' +
+          '<div class="scan-meta">' + fmtSize(s.size) + (s.mtime ? ' • ' + new Date(s.mtime).toLocaleString('id-ID',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '') + '</div>' +
         '</div>' +
         '<div class="scan-actions">' +
-          '<a class="scan-btn preview" href="/api/scans/download/' + encodeURIComponent(s.name) + '" target="_blank" title="Preview">👁</a>' +
+          '<a class="scan-btn preview" href="/api/scans/download/' + encodeURIComponent(s.name) + '?inline=1" target="_blank" rel="noopener" title="Preview">👁</a>' +
           '<a class="scan-btn download" href="/api/scans/download/' + encodeURIComponent(s.name) + '" download title="Download">⬇</a>' +
+          '<button class="scan-btn print" onclick="openScanPrintModal(\\\'' + escJs(s.name) + '\\\')" title="Print">🖨</button>' +
+          '<button class="scan-btn share" onclick="shareMobileScan(\\\'' + escJs(s.name) + '\\\')" title="Share">📤</button>' +
+          '<button class="scan-btn delete" onclick="deleteMobileScan(\\\'' + escJs(s.name) + '\\\')" title="Hapus">🗑</button>' +
         '</div>' +
       '</div>';
     }).join('');
@@ -946,6 +1450,236 @@ async function loadMobileScans() {
   clearTimeout(scanRefreshTimer);
   if (currentPage === 'scans') {
     scanRefreshTimer = setTimeout(loadMobileScans, 30000);
+  }
+}
+
+// ── Direct Print from Scan modal ──────────────────────────────────────────
+function openScanPrintModal(scanName) {
+  closeScanPrintModal();
+  const overlay = document.createElement('div');
+  overlay.id = 'scan-print-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  
+  const pName = assignedPrinter || 'Default Printer';
+  const optionsHtml = printerList && printerList.length > 1
+    ? '<select id="sp-printer-select" style="background:#0f172a;border:1px solid rgba(255,255,255,.2);color:#34d399;font-weight:700;padding:6px 10px;border-radius:8px;width:100%">' +
+        printerList.map(p => '<option value="' + escHtml(p.name) + '"' + (p.name === assignedPrinter ? ' selected' : '') + '>' + escHtml(p.name) + ' (' + printerStateLabel(p.state) + ')</option>').join('') +
+      '</select>'
+    : '<div style="font-weight:700;color:#34d399;font-size:.88rem;background:#0f172a;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.1);">' + escHtml(pName) + '</div>';
+
+  overlay.innerHTML =
+    '<div style="background:#1e293b;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:20px;max-width:360px;width:100%;text-align:left;box-shadow:0 10px 30px rgba(0,0,0,0.5);">'
+    + '<h3 style="margin:0 0 4px;color:#f1f5f9;font-size:1rem;display:flex;align-items:center;gap:8px;">🖨 Print Hasil Scan</h3>'
+    + '<div style="font-size:.78rem;color:#94a3b8;margin-bottom:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 <strong>' + escHtml(scanName) + '</strong></div>'
+    
+    + '<div style="margin-bottom:10px;">'
+    + '<label style="font-size:.68rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:4px;">Target Printer</label>'
+    + optionsHtml
+    + '</div>'
+
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">'
+    + '<div><label style="font-size:.68rem;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:4px;">Copies</label>'
+    + '<input type="number" id="sp-copies" value="1" min="1" max="99" style="width:100%;background:#0f172a;border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#f1f5f9;padding:8px;font-size:.82rem;"></div>'
+    + '<div><label style="font-size:.68rem;color:#94a3b8;text-transform:uppercase;display:block;margin-bottom:4px;">Duplex</label>'
+    + '<select id="sp-duplex" style="width:100%;background:#0f172a;border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#f1f5f9;padding:8px;font-size:.82rem;">'
+    + '<option value="none">Single sided</option><option value="long">Double (long edge)</option><option value="short">Double (short edge)</option></select></div>'
+    + '</div>'
+
+    + '<div style="display:flex;gap:8px;">'
+    + '<button class="btn-primary btn-sm" id="sp-submit-btn" style="flex:1;padding:12px;border-radius:10px;font-weight:700;" onclick="doPrintScan(\\\'' + escJs(scanName) + '\\\')">🖨 Kirim ke Printer</button>'
+    + '<button class="btn-outline btn-sm" style="padding:12px;" onclick="closeScanPrintModal()">Batal</button>'
+    + '</div>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeScanPrintModal(); });
+}
+
+function closeScanPrintModal() {
+  const o = document.getElementById('scan-print-modal-overlay');
+  if (o) o.remove();
+}
+
+async function doPrintScan(scanName) {
+  const btn = document.getElementById('sp-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Mengirim…'; }
+  const pSel = document.getElementById('sp-printer-select');
+  const targetPrinter = pSel ? pSel.value : assignedPrinter;
+  const copies = parseInt(document.getElementById('sp-copies')?.value || '1') || 1;
+  const duplex = document.getElementById('sp-duplex')?.value || 'none';
+
+  try {
+    const res = await fetch('/api/mobile/print-scan', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ scanName, copies, duplex, printer: targetPrinter })
+    });
+    const d = await res.json();
+    if (d && d.ok) {
+      closeScanPrintModal();
+      showPrintSuccessModal({
+        title: 'Successfully',
+        docName: scanName,
+        printerName: d.printer || targetPrinter || '',
+        jobId: d.jobId || 'queued'
+      });
+    } else {
+      throw new Error((d && d.error) || 'Gagal mengirim ke printer');
+    }
+  } catch(e) {
+    showToast('❌ ' + e.message, 'err');
+    showPrintErrorModal({ title: 'Failed', message: e.message });
+    if (btn) { btn.disabled = false; btn.textContent = '🖨 Kirim ke Printer'; }
+  }
+}
+
+// ── Web Share API for Mobile Scans ───────────────────────────────────────
+async function shareMobileScan(scanName) {
+  const fileUrl = window.location.origin + '/api/scans/download/' + encodeURIComponent(scanName);
+  const inlineUrl = fileUrl + '?inline=1';
+
+  if (navigator.share) {
+    try {
+      if (navigator.canShare) {
+        showToast('⏳ Menyiapkan file untuk dibagikan…', 'ok');
+        const resp = await fetch(inlineUrl);
+        const blob = await resp.blob();
+        const mimeType = blob.type || (scanName.endsWith('.pdf') ? 'application/pdf' : scanName.endsWith('.png') ? 'image/png' : 'image/jpeg');
+        const file = new File([blob], scanName, { type: mimeType });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: scanName,
+            text: 'Hasil scan: ' + scanName,
+            files: [file]
+          });
+          return;
+        }
+      }
+      await navigator.share({
+        title: scanName,
+        text: 'Hasil scan: ' + scanName,
+        url: inlineUrl
+      });
+      return;
+    } catch(err) {
+      if (err.name === 'AbortError') return;
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(inlineUrl);
+    showToast('📋 Link hasil scan berhasil disalin ke clipboard!', 'ok');
+  } catch {
+    const input = document.createElement('input');
+    input.value = inlineUrl;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    document.body.removeChild(input);
+    showToast('📋 Link hasil scan berhasil disalin!', 'ok');
+  }
+}
+
+// ── Remote Scan Trigger from HP ───────────────────────────────────────────
+async function loadMobileScanDevices() {
+  const sel = document.getElementById('mobile-scan-device');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/scans/devices');
+    const d = await r.json();
+    const devs = d.devices || [];
+    sel.innerHTML = devs.length
+      ? devs.map(x => '<option value="' + escHtml(x.id) + '">' + escHtml(x.label) + '</option>').join('')
+      : '<option value="">Tidak ada scanner terdeteksi</option>';
+  } catch {
+    sel.innerHTML = '<option value="">Gagal memuat scanner</option>';
+  }
+}
+
+async function triggerMobileScanNow() {
+  const device = document.getElementById('mobile-scan-device')?.value;
+  const source = document.getElementById('mobile-scan-source')?.value || 'Flatbed';
+  const btn = document.getElementById('mobile-scan-now-btn');
+  const status = document.getElementById('mobile-scan-status');
+
+  if (!device) {
+    showToast('⚠️ Silakan pilih scanner terlebih dahulu', 'err');
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Scanning…'; }
+  if (status) status.innerHTML = '<div style="font-size:.75rem;color:#94a3b8;margin-top:6px;">⏳ Memindai dokumen, mohon tunggu hingga 1 menit…</div>';
+
+  try {
+    const r = await fetch('/api/scans/trigger', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ device, source })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('✅ Berhasil memindai: ' + d.name, 'ok');
+      if (status) status.innerHTML = '<div style="font-size:.75rem;color:#34d399;margin-top:6px;">✅ Berhasil memindai: <strong>' + escHtml(d.name) + '</strong></div>';
+      loadMobileScans();
+    } else {
+      throw new Error(d.error || 'Pemindaian gagal');
+    }
+  } catch(e) {
+    showToast('❌ ' + e.message, 'err');
+    if (status) status.innerHTML = '<div style="font-size:.75rem;color:#f87171;margin-top:6px;">❌ ' + escHtml(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🖨 Scan Now'; }
+  }
+}
+
+// ── Upload Camera Scan from HP ──────────────────────────────────────────
+async function uploadMobileCamScan(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const btn = document.getElementById('mobile-cam-btn');
+  const status = document.getElementById('mobile-scan-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Mengunggah foto scan...'; }
+  if (status) status.innerHTML = '<div style="font-size:.75rem;color:#94a3b8;margin-top:6px;">⏳ Memproses foto dari kamera HP...</div>';
+
+  try {
+    const fd = new FormData();
+    fd.append('scanFile', file);
+
+    const r = await fetch('/api/scans/upload', {
+      method: 'POST',
+      body: fd
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('✅ Foto scan kamera berhasil disimpan: ' + d.name, 'ok');
+      if (status) status.innerHTML = '<div style="font-size:.75rem;color:#34d399;margin-top:6px;">✅ Foto scan kamera disimpan: <strong>' + escHtml(d.name) + '</strong></div>';
+      loadMobileScans();
+    } else {
+      throw new Error(d.error || 'Gagal menyimpan foto scan');
+    }
+  } catch(e) {
+    showToast('❌ ' + e.message, 'err');
+    if (status) status.innerHTML = '<div style="font-size:.75rem;color:#f87171;margin-top:6px;">❌ ' + escHtml(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📷 Scan / Foto Dokumen via Kamera HP'; }
+    input.value = '';
+  }
+}
+
+// ── Delete Scan File from HP ──────────────────────────────────────────────
+async function deleteMobileScan(scanName) {
+  if (!confirm('Hapus file hasil scan "' + scanName + '" dari server?')) return;
+  try {
+    const r = await fetch('/api/scans/' + encodeURIComponent(scanName), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('🗑 File scan berhasil dihapus', 'ok');
+      loadMobileScans();
+    } else {
+      throw new Error(d.error || 'Gagal menghapus file');
+    }
+  } catch(e) {
+    showToast('❌ ' + e.message, 'err');
   }
 }
 
@@ -1104,6 +1838,38 @@ function savePrinters() {
   fs.promises.writeFile(DATA_FILE, JSON.stringify(PRINTERS,null,2)).catch(e=>console.error('Failed to save printers:',e.message));
 }
 let PRINTERS = loadPrinters();
+
+async function syncCupsToPrinters() {
+  try {
+    const detail = await getCupsPrinterDetail();
+    const cupsPrinters = detail.printers || [];
+    let changed = false;
+
+    for (const cp of cupsPrinters) {
+      if (!cp.name) continue;
+      const exists = PRINTERS.some(p => p.name.toLowerCase() === cp.name.toLowerCase() || String(p.id).toLowerCase() === cp.name.toLowerCase());
+      if (!exists) {
+        PRINTERS.push({
+          id: cp.name,
+          name: cp.name,
+          ip: '127.0.0.1',
+          brand: 'CUPS Printer',
+          location: 'Auto-Synced CUPS',
+          community: 'public',
+          alertsEnabled: true
+        });
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      savePrinters();
+    }
+  } catch (e) {
+    // Ignore transient errors
+  }
+}
+syncCupsToPrinters();
 
 // ── Settings (Telegram + discovery) ────────────────────────────────────────────
 const DEFAULT_SETTINGS = {
@@ -1659,7 +2425,8 @@ function printFile(filePath, printerName, copies, duplex, colorMode, title) {
       }
     }
 
-    const args = ['-d', printerName, '-n', String(copies || 1)];
+    const safeCopies = Math.max(1, Math.min(99, parseInt(copies, 10) || 1));
+    const args = ['-d', printerName, '-n', String(safeCopies)];
     if (title) args.push('-t', String(title));
     if (duplex === 'long') args.push('-o', 'sides=two-sided-long-edge');
     else if (duplex === 'short') args.push('-o', 'sides=two-sided-short-edge');
@@ -1746,14 +2513,15 @@ function setDefaultPrinter(name) {
 }
 function getCupsPrinterDetail() {
   return new Promise(resolve => {
-    exec('lpstat -p -d 2>/dev/null || echo ""', (err,stdout) => {
+    exec('LC_ALL=C lpstat -p -d 2>/dev/null || echo ""', (err,stdout) => {
       const lines=(stdout||'').split('\n');
       let defaultPrinter=null;
       const printers=[];
       lines.forEach(line=>{
         const dm=line.match(/system default destination:\s*(\S+)/i);
         if (dm) defaultPrinter=dm[1];
-        const pm=line.match(/^printer\s+(\S+)\s+(is idle|is printing|disabled)/i);
+        // CUPS: "printer X is idle." | "printer X now printing X-12." | "printer X disabled since ..."
+        const pm=line.match(/^printer\s+(\S+)\s+(is idle|now printing|is printing|disabled)/i);
         if (pm) printers.push({name:pm[1], state:pm[2]});
       });
       resolve({defaultPrinter, printers});
@@ -2038,13 +2806,19 @@ app.get('/api/scans/download/:name', async (req,res) => {
   const full = path.join(SCAN_DIR, name);
   try {
     await fs.promises.access(full);
+    // ?inline=1 → open in browser (preview). Only for safe, browser-renderable types;
+    // the scan folder is a writable SMB share, so never render arbitrary files inline.
+    if (req.query.inline === '1' && /\.(pdf|jpe?g|png)$/i.test(name)) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+      return res.sendFile(path.resolve(full));
+    }
     res.download(full);
   } catch {
     res.status(404).json({error:'not found'});
   }
 });
 app.delete('/api/scans/:name', async (req,res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({error:'Forbidden — admin access required'});
   const name = path.basename(req.params.name);
   const full = path.join(SCAN_DIR, name);
   try { await fs.promises.unlink(full); res.json({ok:true}); }
@@ -2069,6 +2843,23 @@ app.post('/api/scans/trigger', async (req,res) => {
   }
   try { const name = await triggerScan(device, source); res.json({ok:true, name}); }
   catch(e) { res.status(500).json({error:e.message}); }
+});
+app.post('/api/scans/upload', upload.single('scanFile'), async (req,res) => {
+  if (!req.file) return res.status(400).json({error:'Tidak ada file yang diunggah'});
+  try {
+    const origExt = path.extname(req.file.originalname).toLowerCase() || '.png';
+    const ext = ['.pdf', '.png', '.jpg', '.jpeg', '.webp'].includes(origExt) ? origExt : '.png';
+    const timestamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+    const filename = `cam-scan-${timestamp}-${Math.floor(Math.random()*1000)}${ext}`;
+    const destPath = path.join(SCAN_DIR, filename);
+    await fs.promises.mkdir(SCAN_DIR, { recursive: true });
+    await fs.promises.copyFile(req.file.path, destPath);
+    res.json({ ok: true, name: filename });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    try { await fs.promises.unlink(req.file.path); } catch {}
+  }
 });
 
 // Samba setup helper — returns config snippet
@@ -2163,23 +2954,42 @@ app.get('/api/discover/subnet-guess', (_req,res) => {
 
 // CUPS network discovery (lpinfo) + one-click add via lpadmin
 app.get('/api/cups/discover', async (_req,res) => {
-  try { res.json({found: await lpinfoDiscover()}); }
-  catch(e) { res.status(500).json({error:e.message}); }
+  try {
+    await syncCupsToPrinters();
+    const found = await lpinfoDiscover();
+    const registeredNames = new Set((PRINTERS || []).map(p => p.name.toLowerCase()));
+    try {
+      const cupsDetail = await getCupsPrinterDetail();
+      (cupsDetail.printers || []).forEach(cp => {
+        if (cp.name) registeredNames.add(cp.name.toLowerCase());
+      });
+    } catch (_) {}
+
+    const enrichedFound = found.map(f => {
+      const nameMatch = f.name && registeredNames.has(f.name.toLowerCase());
+      const uriMatch = f.uri && registeredNames.has(f.uri.replace('cups://', '').toLowerCase());
+      return { ...f, alreadyAdded: !!(nameMatch || uriMatch) };
+    });
+
+    res.json({ found: enrichedFound });
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 app.post('/api/cups/discover/add', async (req,res) => {
   const {name, uri} = req.body;
   if (!name||!uri) return res.status(400).json({error:'name and uri required'});
   try {
     const finalName = await lpadminAddPrinter(name, uri);
+    await syncCupsToPrinters();
     const exists = PRINTERS.some(p => p.name.toLowerCase() === finalName.toLowerCase());
     if (!exists) {
       PRINTERS.push({
-        id: Date.now(),
+        id: finalName,
         name: finalName,
         ip: '127.0.0.1',
-        brand: 'generic',
-        location: 'CUPS Printer',
-        community: 'public'
+        brand: 'CUPS Printer',
+        location: 'Auto-Synced CUPS',
+        community: 'public',
+        alertsEnabled: true
       });
       savePrinters();
     }
@@ -3012,13 +3822,34 @@ function renderPrintView() {
 }
 
 // ── Scans view ────────────────────────────────────────────────────────────────
+// Scan UI state survives re-renders (Refresh button, periodic render(), reload after a scan)
+let scanUi = { busy:false, statusHtml:'', device:'', source:'' };
+function scanStatusHtml(color, text) {
+  return '<div style="margin-top:8px;color:var('+color+');font-size:.8rem">'+text+'</div>';
+}
+function applyScanUi() {
+  const status = document.getElementById('scan-now-status');
+  const btn = document.getElementById('scan-now-btn');
+  const src = document.getElementById('scan-source');
+  if (status) status.innerHTML = scanUi.statusHtml;
+  if (btn) { btn.disabled = scanUi.busy; btn.textContent = scanUi.busy ? '⏳ Scanning…' : '🖨 Scan Now'; }
+  if (src && scanUi.source) src.value = scanUi.source;
+}
 async function renderScansView(forceRefresh) {
   document.getElementById('view-title').textContent='Scans';
   document.getElementById('view-sub').textContent='Files scanned to the server share folder';
-  document.getElementById('content').innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><span class="spin"></span> Loading scans…</div>';
+  // Remember selections before the DOM is replaced; no select present = view just opened
+  const prevDev = document.getElementById('scan-device');
+  const prevSrc = document.getElementById('scan-source');
+  if (prevDev) { if (prevDev.value) scanUi.device = prevDev.value; if (prevSrc) scanUi.source = prevSrc.value; }
+  else if (!scanUi.busy) scanUi.statusHtml = '';
+  // Spinner only on first open; on refresh keep the current table to avoid flicker
+  if (!prevDev) document.getElementById('content').innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><span class="spin"></span> Loading scans…</div>';
   try {
+    const isAdmin = window.USER_ROLE==='admin';
     const r=await fetch('/api/scans'); const d=await r.json();
-    const smbaConf=await fetch('/api/samba-config').then(x=>x.json()).catch(()=>({config:''}));
+    // /api/samba-config is admin-only (403 for users) — don't fetch or show it to regular users
+    const smbaConf = isAdmin ? await fetch('/api/samba-config').then(x=>x.json()).catch(()=>({config:''})) : null;
     if (currentView!=='scans') return; // user navigated away
     const scans=d.scans||[];
     let rows=scans.length?scans.map(s=>{
@@ -3034,14 +3865,16 @@ async function renderScansView(forceRefresh) {
         +delBtn
         +\'</div></td></tr>\';
     }).join(\'\'):\'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:30px">No scan files yet</td></tr>\';
-    document.getElementById('content').innerHTML=\`
+    const sambaBox = isAdmin ? \`
       <div class="samba-box">
         <h3>📁 Scan-to-Folder Setup</h3>
         <p>Configure your Canon/HP printer's web UI to scan directly to this server. Add this to <code>/etc/samba/smb.conf</code> and run <code>systemctl restart smbd</code>:</p>
         <div class="code-block">\${esc(smbaConf.config)}</div>
         <div style="margin-top:10px;font-size:.78rem;color:var(--muted)">Then on the printer web UI: <strong>Scan → Scan to Folder → \\\\\\\\SERVER_IP\\\\scans</strong></div>
         <div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Scan folder on server: <code>\${esc(d.dir)}</code></div>
-      </div>
+      </div>\` : '';
+    document.getElementById('content').innerHTML=\`
+      \${sambaBox}
       <div class="scan-header">
         <div style="font-weight:700;color:#f1f5f9">\${scans.length} file\${scans.length!==1?'s':''} in scan folder</div>
         <div style="display:flex;gap:8px">
@@ -3060,6 +3893,7 @@ async function renderScansView(forceRefresh) {
         <thead><tr><th>File Name</th><th>Size</th><th>Date</th><th style="text-align:right">Actions</th></tr></thead>
         <tbody>\${rows}</tbody>
       </table>\`;
+    applyScanUi();
     const devs = await fetch('/api/scans/devices'+(forceRefresh?'?refresh=1':'')).then(x=>x.json()).then(x=>x.devices||[]).catch(()=>[]);
     if (currentView!=='scans') return;
     const devSel = document.getElementById('scan-device');
@@ -3067,6 +3901,7 @@ async function renderScansView(forceRefresh) {
     devSel.innerHTML = devs.length
       ? devs.map(d=>'<option value="'+esc(d.id)+'">'+esc(d.label)+'</option>').join('')
       : '<option value="">No scanners found</option>';
+    if (scanUi.device && devs.some(x=>x.id===scanUi.device)) devSel.value = scanUi.device;
   } catch { if (currentView==='scans') document.getElementById('content').innerHTML='<div class="empty">⚠ Could not load scans</div>'; }
 }
 
@@ -3077,23 +3912,30 @@ async function deleteScan(name) {
 }
 
 async function triggerScanNow() {
+  if (scanUi.busy) return;
   const device = document.getElementById('scan-device').value;
   const source = document.getElementById('scan-source').value;
-  const btn = document.getElementById('scan-now-btn');
-  const status = document.getElementById('scan-now-status');
-  if (!device) { status.innerHTML = '<div style="margin-top:8px;color:var(--red);font-size:.8rem">⚠ No scanner selected</div>'; return; }
-  btn.disabled = true; btn.textContent = '⏳ Scanning…';
-  status.innerHTML = '<div style="margin-top:8px;color:var(--muted);font-size:.8rem">Scanning in progress, this can take up to a minute…</div>';
+  scanUi.device = device; scanUi.source = source;
+  if (!device) { scanUi.statusHtml = scanStatusHtml('--red', '⚠ No scanner selected'); applyScanUi(); return; }
+  scanUi.busy = true;
+  scanUi.statusHtml = scanStatusHtml('--muted', 'Scanning in progress, this can take up to a minute…');
+  applyScanUi();
+  let ok = false;
   try {
     const r = await fetch('/api/scans/trigger', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({device, source})});
     const d = await r.json();
-    if (d.ok) { status.innerHTML = '<div style="margin-top:8px;color:var(--green);font-size:.8rem">✅ Saved '+esc(d.name)+'</div>'; renderScansView(); }
-    else status.innerHTML = '<div style="margin-top:8px;color:var(--red);font-size:.8rem">❌ '+esc(d.error)+'</div>';
+    ok = !!d.ok;
+    scanUi.statusHtml = ok
+      ? scanStatusHtml('--green', '✅ Saved '+esc(d.name))
+      : scanStatusHtml('--red', '❌ '+esc(d.error || 'Scan failed'));
   } catch(e) {
-    status.innerHTML = '<div style="margin-top:8px;color:var(--red);font-size:.8rem">❌ '+esc(e.message)+'</div>';
+    scanUi.statusHtml = scanStatusHtml('--red', '❌ '+esc(e.message));
   } finally {
-    btn.disabled = false; btn.textContent = '🖨 Scan Now';
+    scanUi.busy = false;
   }
+  // DOM may have been re-rendered while scanning — re-apply state; reload list on success
+  if (currentView !== 'scans') return;
+  if (ok) renderScansView(); else applyScanUi();
 }
 
 // ── Jobs view ─────────────────────────────────────────────────────────────────
@@ -3283,6 +4125,64 @@ function showToast(msg) {
   }, 4000);
 }
 
+function showPrintSuccessModal({ title = 'Successfully', docName = '', printerName = '', jobId = '', message = '' }) {
+  const old = document.getElementById('print-success-modal-overlay');
+  if (old) old.remove();
+
+  if (!document.getElementById('print-success-style')) {
+    const st = document.createElement('style');
+    st.id = 'print-success-style';
+    st.textContent =
+      '@keyframes popInModal { 0% { opacity:0; transform:scale(0.8); } 70% { transform:scale(1.05); } 100% { opacity:1; transform:scale(1); } }' +
+      '@keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }';
+    document.head.appendChild(st);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'print-success-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeInModal 0.2s ease-out;';
+
+  const defaultMsg = (docName ? 'Dokumen <strong>' + esc(docName) + '</strong>' : 'Dokumen')
+    + (printerName ? ' berhasil dikirim ke printer <strong>' + esc(printerName) + '</strong>.' : ' berhasil dikirim ke printer.')
+    + (jobId ? '<br><span style="font-size:0.78rem;color:#64748b;margin-top:6px;display:inline-block;background:#f1f5f9;padding:2px 8px;border-radius:6px;">Job ID: #' + esc(jobId) + '</span>' : '');
+
+  const finalMsg = message || defaultMsg;
+
+  overlay.innerHTML =
+    '<div style="background:#ffffff;color:#1e293b;border-radius:24px;width:100%;max-width:360px;text-align:center;position:relative;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;animation:popInModal 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);font-family:system-ui,sans-serif;">'
+      + '<div style="background:#f8fafc;padding:32px 20px 20px;position:relative;display:flex;justify-content:center;align-items:center;">'
+        + '<svg style="position:absolute;top:16px;left:40px;width:22px;height:22px;color:#3b82f6;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10"/></svg>'
+        + '<svg style="position:absolute;top:12px;right:45px;width:26px;height:26px;color:#ef4444;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 8-8"/></svg>'
+        + '<svg style="position:absolute;bottom:14px;left:50px;width:18px;height:18px;color:#a855f7;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 22a10 10 0 0 0 10-10"/></svg>'
+
+        + '<div style="width:72px;height:72px;background:#22c55e;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 20px rgba(34,197,94,0.35);position:relative;z-index:2;">'
+          + '<svg style="width:40px;height:40px;color:#ffffff;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">'
+            + '<polyline points="20 6 9 17 4 12"></polyline>'
+          + '</svg>'
+        + '</div>'
+      + '</div>'
+
+      + '<div style="padding:10px 24px 20px;">'
+        + '<h2 style="margin:0 0 10px;font-size:1.7rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">' + esc(title) + '</h2>'
+        + '<div style="font-size:0.9rem;color:#64748b;line-height:1.5;">' + finalMsg + '</div>'
+      + '</div>'
+
+      + '<div style="padding:0 24px 24px;">'
+        + '<button style="width:100%;padding:14px;background:#e2e8f0;color:#0f172a;border:none;border-radius:14px;font-size:1.05rem;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);transition:background 0.2s;" onclick="closePrintSuccessModal()">'
+          + 'Oke'
+        + '</button>'
+      + '</div>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePrintSuccessModal(); });
+}
+
+function closePrintSuccessModal() {
+  const o = document.getElementById('print-success-modal-overlay');
+  if (o) o.remove();
+}
+
 async function renderJobsView(silent) {
   document.getElementById('view-title').textContent='Print Jobs';
   document.getElementById('view-sub').textContent='CUPS printers, active queue, and history';
@@ -3450,10 +4350,24 @@ async function runCupsDiscover() {
     const r=await fetch('/api/cups/discover'); const d=await r.json();
     const found=d.found||[];
     if (!found.length) { document.getElementById('cups-results').innerHTML='<div class="no-data">CUPS found nothing. Printer may need to be on and IPP-capable.</div>'; return; }
-    document.getElementById('cups-results').innerHTML=found.map((f,i)=>\`<div class="discover-row">
-      <div class="discover-info"><div class="discover-ip">\${esc(f.name || f.kind)}</div><div class="discover-descr">\${esc(f.uri)}</div></div>
-      <button class="btn-green btn-sm" data-uri="\${esc(f.uri)}" data-name="\${esc(f.name||'')}" onclick="addCupsResult(this.dataset.uri, this.dataset.name)">+ Add to CUPS</button>
-    </div>\`).join('');
+    document.getElementById('cups-results').innerHTML=found.map((f,i)=>{
+      if (f.alreadyAdded) {
+        return '<div class="discover-row" style="background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.2);display:flex;align-items:center;justify-content:space-between;padding:12px;border-radius:8px;margin-bottom:8px">' +
+          '<div class="discover-info">' +
+            '<div class="discover-ip" style="display:flex;align-items:center;gap:8px;font-weight:600">' +
+              esc(f.name || f.kind) +
+              ' <span class="badge online" style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.3);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">✓ Terdaftar & Tersimpan</span>' +
+            '</div>' +
+            '<div class="discover-descr" style="color:var(--muted);font-size:12px;margin-top:2px">' + esc(f.uri) + '</div>' +
+          '</div>' +
+          '<button class="btn-secondary btn-sm" disabled style="opacity:0.75;cursor:default"><i class="fas fa-check-circle"></i> Sudah Terdaftar</button>' +
+        '</div>';
+      }
+      return '<div class="discover-row">' +
+        '<div class="discover-info"><div class="discover-ip">' + esc(f.name || f.kind) + '</div><div class="discover-descr">' + esc(f.uri) + '</div></div>' +
+        '<button class="btn-green btn-sm" data-uri="' + esc(f.uri) + '" data-name="' + esc(f.name||'') + '" onclick="addCupsResult(this.dataset.uri, this.dataset.name)">+ Add to CUPS</button>' +
+      '</div>';
+    }).join('');
   } catch { document.getElementById('cups-results').innerHTML='<div class="empty">⚠ Scan failed</div>'; }
 }
 
@@ -3540,48 +4454,62 @@ async function renderUsersView() {
   try { users = (await fetch('/api/users').then(x=>x.json())).users||[]; } catch {}
   let printers=[];
   try { printers = (await fetch('/api/printers').then(x=>x.json())).data||[]; } catch {}
-  const printerName = id => (printers.find(p=>p.id===id)||{}).name || ('#'+id);
-  const rows = users.map(u=>\`
-    <tr>
-      <td style="font-weight:600;color:#f1f5f9">\${esc(u.username)}</td>
-      <td><span class="chip" style="background:\${u.role==='admin'?'rgba(59,130,246,.15);color:var(--blue)':'rgba(148,163,184,.15);color:var(--subtle)'}">\${esc(u.role)}</span></td>
-      <td>\${u.role==='admin' ? '<span style="color:var(--muted)">All</span>' : (Array.isArray(u.printerAccess)&&u.printerAccess.length ? u.printerAccess.map(id=>\`<span class="chip" style="background:rgba(148,163,184,.15);color:var(--subtle);margin-right:4px">\${esc(printerName(id))}</span>\`).join('') : '<span style="color:var(--muted)">All</span>')}</td>
-      <td style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn-outline btn-sm" onclick="resetUserPassword('\${esc(u.username)}')">Reset Password</button>
-        <button class="btn-outline btn-sm" onclick="toggleUserRole('\${esc(u.username)}','\${u.role==='admin'?'user':'admin'}')">Make \${u.role==='admin'?'User':'Admin'}</button>
-        \${u.role==='user' ? \`<button class="btn-outline btn-sm" onclick="editUserPrinterAccess('\${esc(u.username)}')">Edit Printer Access</button>\` : ''}
-        <button class="btn-danger btn-sm" onclick="deleteUser('\${esc(u.username)}')">Delete</button>
-      </td>
-    </tr>\`).join('');
-  const printerCheckboxes = printers.map(p=>\`
-    <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:4px 0;cursor:pointer">
-      <input type="checkbox" class="nu-printer-cb" value="\${p.id}" style="width:15px;height:15px;flex-shrink:0;margin:0;accent-color:var(--blue)"/><span>\${esc(p.name)} <span style="color:var(--muted);font-size:.8rem">(\${esc(p.brand||'')})</span></span>
-    </label>\`).join('') || '<div style="color:var(--muted)">No printers configured yet</div>';
-  document.getElementById('content').innerHTML=\`
-    <div class="settings-card">
-      <h3>➕ Add User</h3>
-      <div class="field-row">
-        <div class="field"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>
-        <div class="field"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>
-      </div>
-      <div class="field" style="max-width:200px"><label>Role</label>
-        <select id="nu-role" onchange="document.getElementById('nu-printer-access').style.display=this.value==='user'?'block':'none'"><option value="user">User (Print + Scans only)</option><option value="admin">Admin (Full access)</option></select>
-      </div>
-      <div class="field" id="nu-printer-access">
-        <label>Restrict to printer(s) <span style="color:var(--muted);font-weight:400">— leave all unchecked to allow every printer</span></label>
-        \${printerCheckboxes}
-      </div>
-      <button class="btn-primary" onclick="addUser()">Create User</button>
-      <div id="users-status" class="settings-status"></div>
-    </div>
-    <div class="settings-card">
-      <h3>👥 Existing Users</h3>
-      <table class="data-table">
-        <thead><tr><th>Username</th><th>Role</th><th>Printer Access</th><th>Actions</th></tr></thead>
-        <tbody>\${rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:16px;">No users</td></tr>'}</tbody>
-      </table>
-    </div>
-  \`;
+  const printerName = id => {
+    const found = printers.find(p => String(p.id) === String(id) || String(p.name) === String(id));
+    return found ? (found.name + (found.brand ? ' (' + found.brand + ')' : '')) : ('#' + id);
+  };
+
+  const rows = users.map(u => {
+    const isUserRole = u.role === 'user';
+    const accessText = u.role === 'admin'
+      ? '<span style="color:var(--muted)">All</span>'
+      : (Array.isArray(u.printerAccess) && u.printerAccess.length
+          ? u.printerAccess.map(id => '<span class="chip" style="background:rgba(59,130,246,.15);color:var(--blue);margin-right:4px;margin-bottom:4px;display:inline-block;">' + esc(printerName(id)) + '</span>').join('')
+          : '<span style="color:var(--muted)">All</span>');
+
+    return '<tr>' +
+      '<td style="font-weight:600;color:#f1f5f9">' + esc(u.username) + '</td>' +
+      '<td><span class="chip" style="background:' + (u.role==='admin'?'rgba(59,130,246,.15);color:var(--blue)':'rgba(148,163,184,.15);color:var(--subtle)') + '">' + esc(u.role) + '</span></td>' +
+      '<td>' + accessText + '</td>' +
+      '<td style="display:flex;gap:6px;flex-wrap:wrap">' +
+        '<button class="btn-outline btn-sm" onclick="resetUserPassword(\\\'' + escJs(u.username) + '\\\')">Reset Password</button>' +
+        '<button class="btn-outline btn-sm" onclick="toggleUserRole(\\\'' + escJs(u.username) + '\\\',\\\'' + (u.role==='admin'?'user':'admin') + '\\\')">Make ' + (u.role==='admin'?'User':'Admin') + '</button>' +
+        (isUserRole ? '<button class="btn-outline btn-sm" onclick="editUserPrinterAccess(\\\'' + escJs(u.username) + '\\\')">Edit Printer Access</button>' : '') +
+        '<button class="btn-danger btn-sm" onclick="deleteUser(\\\'' + escJs(u.username) + '\\\')">Delete</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  const printerCheckboxes = printers.map(p =>
+    '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:4px 0;cursor:pointer">' +
+      '<input type="checkbox" class="nu-printer-cb" value="' + esc(p.id) + '" style="width:15px;height:15px;flex-shrink:0;margin:0;accent-color:var(--blue)"/><span>' + esc(p.name) + ' <span style="color:var(--muted);font-size:.8rem">(' + esc(p.brand||'Generic') + ')</span></span>' +
+    '</label>'
+  ).join('') || '<div style="color:var(--muted)">No printers configured yet</div>';
+
+  document.getElementById('content').innerHTML =
+    '<div class="settings-card">' +
+      '<h3>➕ Add User</h3>' +
+      '<div class="field-row">' +
+        '<div class="field"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
+        '<div class="field"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>' +
+      '</div>' +
+      '<div class="field" style="max-width:200px"><label>Role</label>' +
+        '<select id="nu-role" onchange="onUserRoleChange(this.value)"><option value="user">User (Print + Scans only)</option><option value="admin">Admin (Full access)</option></select>' +
+      '</div>' +
+      '<div class="field" id="nu-printer-access">' +
+        '<label>Restrict to printer(s) <span style="color:var(--muted);font-weight:400">— leave all unchecked to allow every printer</span></label>' +
+        printerCheckboxes +
+      '</div>' +
+      '<button class="btn-primary" onclick="addUser()">Create User</button>' +
+      '<div id="users-status" class="settings-status"></div>' +
+    '</div>' +
+    '<div class="settings-card">' +
+      '<h3>👥 Existing Users</h3>' +
+      '<table class="data-table">' +
+        '<thead><tr><th>Username</th><th>Role</th><th>Printer Access</th><th>Actions</th></tr></thead>' +
+        '<tbody>' + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:16px;">No users</td></tr>') + '</tbody>' +
+      '</table>' +
+    '</div>';
 }
 
 async function renderQRView() {
@@ -3611,10 +4539,15 @@ async function renderQRView() {
       + '<div style="font-weight:700;color:#f1f5f9;font-size:1rem;">' + uname + '</div>'
       + '<div style="margin-top:4px;"><span class="chip" style="background:' + roleStyle + ';">' + esc(u.role) + '</span></div>'
       + '</div>'
-      + '<button class="btn-primary" style="display:flex;align-items:center;gap:8px;padding:10px 18px;border-radius:10px;font-size:.88rem;white-space:nowrap;" onclick="generateQR(&quot;' + uname + '&quot;)">' 
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      + '<button class="btn-primary" style="display:flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;font-size:.88rem;white-space:nowrap;" onclick="generateQR(&quot;' + uname + '&quot;, false)">' 
       + '<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h.01M18 14h.01M14 18h.01M18 18h.01M21 14v4M14 21h4"/></svg>'
-      + ' Generate QR'
+      + ' Tampilkan QR'
       + '</button>'
+      + '<button class="btn-danger btn-sm" style="display:flex;align-items:center;gap:6px;padding:10px 14px;border-radius:10px;font-size:.85rem;white-space:nowrap;" onclick="revokeQR(&quot;' + uname + '&quot;)">'
+      + '❌ Revoke Token'
+      + '</button>'
+      + '</div>'
       + '</div>';
   }).join('');
 
@@ -3632,15 +4565,15 @@ async function renderQRView() {
     + '</div>';
 }
 
-async function generateQR(username) {
+async function generateQR(username, rotate = false) {
   try {
     const r = await fetch('/api/mobile/token', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ username })
+      body: JSON.stringify({ username, rotate })
     });
     const d = await r.json();
-    if (!d.ok) { alert('Failed to generate token: ' + (d.error||'Unknown error')); return; }
+    if (!d.ok) { alert('Failed to get token: ' + (d.error||'Unknown error')); return; }
 
     const serverIp = d.serverIp || location.hostname;
     let host = location.host;
@@ -3662,21 +4595,37 @@ async function generateQR(username) {
     overlay.innerHTML = 
       '<div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:380px;width:100%;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.5);">'
       + '<h3 style="margin:0 0 6px;color:#f1f5f9;font-size:1.1rem;">📱 Mobile QR Code</h3>'
-      + '<div style="font-size:.82rem;color:var(--subtle);margin-bottom:16px;">User: <strong style="color:var(--blue);">' + esc(username) + '</strong> (Valid 30 Days)</div>'
+      + '<div style="font-size:.82rem;color:var(--subtle);margin-bottom:12px;">User: <strong style="color:var(--blue);">' + esc(username) + '</strong> (Valid 30 Days)</div>'
       + ipNotice
       + '<div style="background:#fff;padding:12px;border-radius:12px;display:inline-block;margin-bottom:16px;">'
       + '<img src="' + qrApi + '" alt="QR Code (Local)" style="width:200px;height:200px;display:block;margin:0 auto;" />'
       + '</div>'
       + '<div style="margin-bottom:16px;">'
       + '<input type="text" readonly value="' + esc(link) + '" id="qr-modal-link" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:#f1f5f9;font-size:.75rem;text-align:center;margin-bottom:8px;" />'
-      + '<button class="btn-primary btn-sm" style="width:100%;padding:8px;" onclick="copyQRModalLink()">📋 Copy Mobile Link</button>'
+      + '<button class="btn-primary btn-sm" style="width:100%;padding:8px;margin-bottom:8px;" onclick="copyQRModalLink()">📋 Copy Mobile Link</button>'
+      + '<button class="btn-outline btn-sm" style="width:100%;padding:8px;color:#f87171;border-color:rgba(239,68,68,0.3);" onclick="if(confirm(&quot;Buat QR Token baru untuk ' + escJs(username) + '? Token QR lama akan langsung tidak berlaku.&quot;)) generateQR(&quot;' + escJs(username) + '&quot;, true)">🔄 Regenerate / Rotasi QR</button>'
       + '</div>'
       + '<button class="btn-outline btn-sm" style="width:100%;" onclick="closeQRModal()">Close</button>'
       + '</div>';
     document.body.appendChild(overlay);
     overlay.addEventListener('click', e => { if (e.target === overlay) closeQRModal(); });
   } catch(e) {
-    alert('Error generating QR: ' + e.message);
+    alert('Error getting QR: ' + e.message);
+  }
+}
+async function revokeQR(username) {
+  if (!confirm('Cabut (Revoke) akses QR token untuk user "' + username + '"? Token QR dan semua sesi mobile aktif user ini akan dibatalkan.')) return;
+  try {
+    const r = await fetch('/api/mobile/token/' + encodeURIComponent(username), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      alert('Token QR untuk ' + username + ' berhasil dicabut.');
+      renderQRView();
+    } else {
+      alert('Gagal mencabut token: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
   }
 }
 function closeQRModal() {
@@ -3714,61 +4663,151 @@ async function renderSharedDocsSection() {
   if (!container) return;
   container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)"><span class="spin"></span></div>';
   try {
-    const r = await fetch('/api/shared-docs');
-    const d = await r.json();
-    const docs = d.docs || [];
+    const [docsRes, targetsRes, histRes] = await Promise.all([
+      fetch('/api/shared-docs').then(r => r.json()).catch(() => ({ docs: [] })),
+      fetch('/api/shared-docs/targets').then(r => r.json()).catch(() => ({ targets: [] })),
+      fetch('/api/shared-docs/history').then(r => r.json()).catch(() => ({ history: [] }))
+    ]);
+
+    const docs = docsRes.docs || [];
+    const targets = targetsRes.targets || [];
+    const history = histRes.history || [];
+
     const rows = docs.length
-      ? docs.map(doc => \`<tr>
-          <td style="font-weight:600;color:#f1f5f9">\${esc(doc.name)}</td>
-          <td style="color:var(--muted);font-size:.8rem">\${fmtSize(doc.size)}</td>
-          <td style="color:var(--muted);font-size:.8rem">\${new Date(doc.mtime).toLocaleString()}</td>
-          <td><button class="btn-danger btn-sm" onclick="deleteSharedDoc('\${esc(doc.name)}')">✕</button></td>
-        </tr>\`).join('')
-      : '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">No shared documents yet</td></tr>';
-    container.innerHTML = \`
-      <table class="data-table">
-        <thead><tr><th>File Name</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
-        <tbody>\${rows}</tbody>
-      </table>
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-        <input type="file" id="shared-doc-file" accept=".pdf,.doc,.docx,.dot,.dotx,.docm,.rtf,.odt,.txt,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px;color:#f1f5f9;font-size:.82rem"/>
-        <button class="btn-primary btn-sm" onclick="uploadSharedDoc()">⬆ Upload</button>
-      </div>
-      <div id="shared-doc-status" style="margin-top:6px;font-size:.78rem"></div>\`;
+      ? docs.map(doc => {
+          const isPub = doc.targetUser === 'all';
+          const targetBadge = isPub 
+            ? '<span class="badge-green">🌐 Semua User</span>' 
+            : '<span class="badge-amber">🔒 ' + esc(doc.targetUser) + '</span>';
+          return '<tr>' +
+            '<td style="font-weight:600;color:#f1f5f9">' + esc(doc.name) + '</td>' +
+            '<td style="color:var(--muted);font-size:.8rem">' + esc(doc.uploader || 'admin') + '</td>' +
+            '<td style="font-size:.8rem">' + targetBadge + '</td>' +
+            '<td style="color:var(--muted);font-size:.8rem">' + fmtSize(doc.size) + '</td>' +
+            '<td style="color:var(--muted);font-size:.8rem">' + new Date(doc.uploadTime || doc.mtime).toLocaleString() + '</td>' +
+            '<td style="display:flex;gap:4px;">' +
+              '<a href="/api/shared-docs/download/' + encodeURIComponent(doc.name) + '" class="btn-outline btn-sm" download title="Download">⬇</a>' +
+              '<button class="btn-danger btn-sm" onclick="deleteSharedDoc(\\\'' + escJs(doc.name) + '\\\')" title="Hapus">✕</button>' +
+            '</td>' +
+          '</tr>';
+        }).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Belum ada dokumen bersama</td></tr>';
+
+    const targetOptions = '<option value="all">🌐 Semua User (Publik)</option>' +
+      targets.map(u => '<option value="' + esc(u.username) + '">🔒 ' + esc(u.username) + ' (' + esc(u.role) + ')</option>').join('');
+
+    const histRows = history.length
+      ? history.slice(0, 50).map(h => {
+          const actionColors = { UPLOAD: '#10b981', DOWNLOAD: '#3b82f6', PRINT: '#8b5cf6', DELETE: '#ef4444' };
+          const color = actionColors[h.action] || '#94a3b8';
+          return '<tr>' +
+            '<td style="color:var(--muted);font-size:.78rem">' + new Date(h.timestamp).toLocaleString() + '</td>' +
+            '<td><span style="font-size:.72rem;font-weight:700;color:' + color + ';background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;">' + esc(h.action) + '</span></td>' +
+            '<td style="font-weight:600;font-size:.8rem;color:#f1f5f9">' + esc(h.user) + '</td>' +
+            '<td style="font-size:.8rem;color:#cbd5e1">' + esc(h.filename) + '</td>' +
+            '<td style="font-size:.78rem;color:var(--muted)">' + esc(h.targetUser) + '</td>' +
+            '<td style="font-size:.75rem;color:var(--subtle)">' + esc(h.details || '') + '</td>' +
+          '</tr>';
+        }).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px">Belum ada riwayat aktivitas</td></tr>';
+
+    container.innerHTML =
+      '<div style="margin-bottom:16px;background:rgba(15,23,42,0.4);border:1px solid var(--border);border-radius:12px;padding:12px;">' +
+        '<table class="data-table">' +
+          '<thead><tr><th>Nama File</th><th>Pengirim</th><th>Target Penerima</th><th>Ukuran</th><th>Waktu Upload</th><th>Aksi</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+        '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<input type="file" id="shared-doc-file" accept=".pdf,.doc,.docx,.dot,.dotx,.docm,.rtf,.odt,.txt,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx" style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px;color:#f1f5f9;font-size:.82rem"/>' +
+          '<select id="shared-doc-target" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:#f1f5f9;font-size:.82rem">' +
+            targetOptions +
+          '</select>' +
+          '<button class="btn-primary btn-sm" onclick="uploadSharedDoc()">⬆ Upload Dokumen</button>' +
+        '</div>' +
+        '<div id="shared-doc-status" style="margin-top:6px;font-size:.78rem"></div>' +
+      '</div>' +
+
+      '<h4 style="margin:20px 0 10px;color:#f1f5f9;font-size:1rem;display:flex;align-items:center;gap:8px;">📜 Riwayat Aktivitas Shared Documents</h4>' +
+      '<table class="data-table" style="font-size:.8rem">' +
+        '<thead><tr><th>Waktu</th><th>Aktivitas</th><th>Pengguna</th><th>Nama Dokumen</th><th>Target</th><th>Detail</th></tr></thead>' +
+        '<tbody>' + histRows + '</tbody>' +
+      '</table>';
   } catch {
-    container.innerHTML = '<div style="color:var(--muted);padding:10px">Failed to load</div>';
+    container.innerHTML = '<div style="color:var(--muted);padding:10px">Gagal memuat dokumen bersama</div>';
   }
 }
+
 async function uploadSharedDoc() {
   const fileInput = document.getElementById('shared-doc-file');
-  if (!fileInput.files.length) return;
+  const targetSel = document.getElementById('shared-doc-target');
+  if (!fileInput || !fileInput.files.length) return;
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
+  if (targetSel) fd.append('targetUser', targetSel.value);
   const statusEl = document.getElementById('shared-doc-status');
-  statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Uploading…';
+  if (statusEl) { statusEl.style.color = 'var(--muted)'; statusEl.textContent = 'Uploading…'; }
   try {
     const r = await fetch('/api/shared-docs', { method:'POST', body: fd });
     const d = await r.json();
-    if (d.ok) { statusEl.style.color='var(--green,#22c55e)'; statusEl.textContent='✅ Uploaded: ' + d.name; renderSharedDocsSection(); }
-    else { statusEl.style.color='var(--red,#ef4444)'; statusEl.textContent = '❌ ' + (d.error||'Failed'); }
-  } catch(e) { statusEl.style.color='var(--red,#ef4444)'; statusEl.textContent = '❌ ' + e.message; }
+    if (d.ok) { 
+      if (statusEl) { statusEl.style.color='var(--green,#22c55e)'; statusEl.textContent='✅ Berhasil diunggah untuk ' + d.targetUser + ': ' + d.name; } 
+      renderSharedDocsSection(); 
+    }
+    else { if (statusEl) { statusEl.style.color='var(--red,#ef4444)'; statusEl.textContent = '❌ ' + (d.error||'Gagal mengunggah'); } }
+  } catch(e) { if (statusEl) { statusEl.style.color='var(--red,#ef4444)'; statusEl.textContent = '❌ ' + e.message; } }
 }
+
 async function deleteSharedDoc(name) {
-  if (!confirm('Delete shared document: ' + name + '?')) return;
+  if (!confirm('Hapus dokumen bersama: ' + name + '?')) return;
   await fetch('/api/shared-docs/'+encodeURIComponent(name), {method:'DELETE'});
   renderSharedDocsSection();
 }
 
+function onUserRoleChange(val) {
+  const el = document.getElementById('nu-printer-access');
+  if (el) el.style.display = (val === 'user') ? 'block' : 'none';
+}
+
 async function addUser() {
-  const username=document.getElementById('nu-username').value.trim();
-  const password=document.getElementById('nu-password').value;
-  const role=document.getElementById('nu-role').value;
-  const printerAccess=Array.from(document.querySelectorAll('.nu-printer-cb:checked')).map(cb=>Number(cb.value));
-  if (!username||!password) { showUsersStatus('Username and password required','err'); return; }
-  const r = await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,role,printerAccess})});
-  const d = await r.json();
-  if (d.ok) { showUsersStatus('✅ User created','ok'); renderUsersView(); }
-  else showUsersStatus('❌ '+(d.error||'Failed'),'err');
+  const usernameInput = document.getElementById('nu-username');
+  const passwordInput = document.getElementById('nu-password');
+  const username = usernameInput ? usernameInput.value.trim() : '';
+  const password = passwordInput ? passwordInput.value : '';
+  const role = document.getElementById('nu-role') ? document.getElementById('nu-role').value : 'user';
+  const printerAccess = Array.from(document.querySelectorAll('.nu-printer-cb:checked')).map(cb => cb.value);
+
+  if (!username || !password) {
+    showUsersStatus('Username and password required', 'err');
+    showPrintErrorModal({ title: 'Failed', message: 'Username dan Password wajib diisi!' });
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, role, printerAccess })
+    });
+    const d = await r.json();
+
+    if (d.ok) {
+      showUsersStatus('✅ User created', 'ok');
+      showPrintSuccessModal({
+        title: 'Successfully',
+        message: 'Akun user <strong>' + esc(username) + '</strong> berhasil dibuat & ditambahkan ke daftar Existing Users!'
+      });
+      renderUsersView();
+    } else {
+      showUsersStatus('❌ ' + (d.error || 'Failed'), 'err');
+      showPrintErrorModal({
+        title: 'Failed',
+        message: 'Gagal membuat user: ' + (d.error || 'Unknown error')
+      });
+    }
+  } catch(e) {
+    showUsersStatus('❌ ' + e.message, 'err');
+    showPrintErrorModal({ title: 'Failed', message: e.message });
+  }
 }
 
 async function toggleUserRole(username, newRole) {
@@ -4299,11 +5338,23 @@ async function submitPrint(id) {
     if (d.ok) {
       printFiles[id]=null;
       document.getElementById('dz-label-'+id).textContent='Drop file here or click to browse';
+      showPrintSuccessModal({
+        title: 'Successfully',
+        docName: file ? file.name : '',
+        printerName: printer,
+        jobId: d.jobId || 'queued'
+      });
       if (d.jobId) trackPrintJob(id, d.jobId);
       else showPrintStatus(id,'✅ Sent to printer','ok');
     }
-    else showPrintStatus(id,'❌ Error: '+esc(d.error),'err');
-  } catch(e) { showPrintStatus(id,'❌ '+e.message,'err'); }
+    else {
+      showPrintStatus(id,'❌ Error: '+esc(d.error),'err');
+      showPrintErrorModal({ title: 'Failed', message: d.error || 'Gagal mengirim dokumen ke printer.' });
+    }
+  } catch(e) {
+    showPrintStatus(id,'❌ '+e.message,'err');
+    showPrintErrorModal({ title: 'Failed', message: e.message });
+  }
 }
 
 // Polls the job's status after submission so the user sees Queued → Printing → Completed
@@ -4381,6 +5432,7 @@ function editPrinter(id){ openModal(id); }
 
 function fmtSize(b){ if(b<1024)return b+'B'; if(b<1024*1024)return Math.round(b/1024)+'KB'; return (b/1024/1024).toFixed(1)+'MB'; }
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escJs(s){ return String(s||'').replace(/'/g,"\\'").replace(/"/g,'\\"'); }
 
 applyRoleUI();
 if (window.USER_ROLE!=='admin') { currentView='print'; }

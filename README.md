@@ -2,43 +2,53 @@
 
 <img width="1376" height="768" alt="PrintServer Banner" src="./banner.png" />
 
-A powerful, self-hosted office printer & scanner management dashboard with SNMP-based toner/status monitoring, CUPS print queue control, remote SANE scanning, Telegram alerts, print history PDF exports, and Mobile PWA support — all running from a single Node.js process.
+A powerful, self-hosted office printer & scanner management dashboard with SNMP-based toner/status monitoring, CUPS print queue control, remote SANE scanning, mobile camera scan, private document sharing, Telegram alerts, print history PDF exports, and Mobile PWA support — all running from a single Node.js process.
 
 ---
 
-## Features
+## 🌟 Key Features
 
-### 🖨️ Printer Monitoring
+### 🖨️ Printer Monitoring & Persistent Storage
 - **SNMP Polling**: Real-time polling for networked printers (Canon, HP, Epson, Brother, Ricoh, Xerox, etc.).
 - **Toner & Supply Tracking**: Detailed percentage levels per cartridge with customizable low-toner alerts.
 - **Paper & Hardware Status**: Paper tray level detection, paper empty alerts, jam detection, cover open, and service warnings.
 - **Reliable Debounce**: Online/offline detection with consecutive-failure debounce to eliminate false alarms from temporary SNMP timeouts.
 - **Page Counter & Uptime**: Print volume history tracking per printer and server uptime stats.
+- **Auto-Synced CUPS Persistence**: Registered CUPS printers are automatically synchronized and permanently stored in `data/printers.json`. They remain assigned across server and container restarts, marked with `✓ Terdaftar & Tersimpan` in Network Discovery.
 
 ### 📋 Print Management (CUPS Integration)
-- **Queue Control**: View all active CUPS print queues, pause/resume queues, and set the default printer.
-- **Dashboard File Printing**: Direct file printing from web UI (supports PDF, DOCX, XLSX, TXT, and image files).
+- **Queue Control**: View all active CUPS print queues, pause/resume queues, and set default printer.
+- **Dashboard File Printing**: Direct file printing from web UI (supports PDF, DOCX, XLSX, TXT, JPG, PNG).
 - **Job Control & Cancellation**: Cancel active/pending print jobs directly from the dashboard.
 - **Print History & PDF Export**: View complete history, filter/group by user or printer, multi-select deletion, and 1-click **Export to PDF** with automated 30-day report reminder.
+- **Interactive Action Modals**: Modern success popup modals with animated checkmark & confetti, and detailed error modals for all print operations on both Mobile and Desktop UI.
 
-### 📄 Scanner & Samba Support (SANE + SMB)
-- **Remote Web Scanning**: Trigger scans from connected SANE scanners directly from the browser UI.
-- **Scan File Management**: View, preview, and download scanned documents.
+### 📄 Scanner & Camera Scan (SANE + eSCL + HP Camera)
+- **Remote Web Scanning**: Trigger hardware scans from connected SANE/eSCL scanners directly from the web browser.
+- **📷 Camera Scan via Mobile HP**: Use smartphone cameras to scan paper documents on the go. Converts photos automatically into PDF or PNG format, saved directly to the server scan storage.
+- **Scan-to-Print & Share**: 1-click Print to any server printer, Preview, Download, or Share via WhatsApp, Telegram, and Google Drive (via Web Share API).
 - **Scan-to-Folder (SMB)**: Built-in Samba config generator for `/etc/samba/smb.conf` so Canon/HP network printers can scan directly to `\\SERVER_IP\scans`.
+
+### 📂 Private Shared Documents & Privacy Control
+- **Targeted Sharing**: Upload documents to the shared library and target specific users (`Semua User` or individual target users).
+- **Strict Privacy Access**: Private documents are strictly visible, downloadable, and printable ONLY by the target recipient and admin.
+- **📩 Unread Badge Notification**: Mobile UI features a live `📩 X Baru` badge highlighting unread private documents for the logged-in user.
+- **📊 Audit History Log**: Dedicated access history table tracking every download, print, and view event per document.
 
 ### 🔍 Auto Printer Discovery
 - **Subnet SNMP Scanner**: Scan local IP subnets to auto-detect network printers.
+- **CUPS Network Discovery (`lpinfo`)**: Detect IPP, mDNS, LPD, Socket, and USB printers. Discovered printers already registered are clearly badged (`✓ Terdaftar & Tersimpan`).
 - **1-Click Auto-Provisioning**: Automatically creates CUPS print queue (`ipp://<ip>/ipp/print`) and SANE scanner entry (`airscan.conf`) in one click.
-- **IPP / CUPS Discovery**: Alternative IPP mDNS discovery for local subnet printers.
 
 ### 📱 Mobile PWA & QR Code Access
-- **Installable PWA**: Mobile-friendly web app (`/mobile`) with web manifest and service worker.
-- **QR Token Access**: Administrator generates a per-user QR code/token for quick mobile login, and can revoke it at any time.
-- **Mobile Printing**: Print uploaded files or shared documents directly from the phone.
+- **Installable PWA**: Mobile-optimized web application (`/mobile`) with web app manifest and service worker.
+- **QR Token Access**: Admin generates per-user QR codes/tokens for instant passwordless mobile login.
+- **Mobile Action Hub**: Print files, capture camera scans, view private shared documents, and send print jobs directly from smartphones.
 
-### 📂 Shared Documents & Groups
-- **Shared Documents**: Admin uploads documents to a shared library (`SHARED_DOCS_DIR`) that mobile users can print.
-- **Groups**: Organize users and printers into groups (create, edit, delete) for access management.
+### 👥 Multi-Printer User Management & Groups
+- **Role-Based Auth**: `admin` (full management access) and `user` (restricted printer access).
+- **Multi-Printer Assignment**: Assign specific printer access privileges per user. Instant detection and auto-refresh on existing user lists upon creation with interactive feedback modals.
+- **User Groups**: Organize users and printers into customizable groups for structured access control.
 
 ### 🔔 Telegram Alerts
 - **Real-Time Notifications**: Instant alert messages for low toner, empty paper, paper jams, offline state, and back-online recovery.
@@ -49,10 +59,6 @@ A powerful, self-hosted office printer & scanner management dashboard with SNMP-
 ### 💾 1-Click Backup & Restore
 - **Export Backup**: Download a single `.json` backup file containing all system configurations (Printers, Users, Settings, Groups, Mobile Tokens, Job Metadata).
 - **Import Restore**: Restore all configurations to PrintServer in 1-click with safety confirmation and automatic persistence to disk.
-
-### 🔐 Security & Access Control
-- **Role-Based Auth**: `admin` (full management access) and `user` (read-only monitoring & printing).
-- **User Management**: Add new users, manage roles, change passwords, and track user sessions.
 
 ---
 
@@ -158,26 +164,21 @@ This creates:
 - CUPS print queue: `lpadmin -p "<name>" -E -v ipp://<ip>/ipp/print -m everywhere`
 - SANE scan entry in `/etc/sane.d/airscan.conf`: `"<name>" = http://<ip>:80/eSCL, eSCL`
 
-### 2. If auto-provisioning fails, add manually
+### 2. Camera Scan via Smartphone (Mobile PWA)
+1. Scan QR code or navigate to `/mobile` on mobile browser.
+2. Go to **Scan Dokumen** tab -> Tap **📷 Ambil Foto / Scan via Kamera HP**.
+3. Take a photo of the document.
+4. Document will be converted to PDF/PNG and shown in scan results with options:
+   - 🖨 **Print**: Send directly to chosen server printer.
+   - 👁 **Preview**: View scanned photo.
+   - 📤 **Share**: Share to WhatsApp, Telegram, or Drive.
+   - ⬇ **Download**: Download file locally.
 
-CUPS:
-```bash
-lpadmin -p "PrinterName" -E -v ipp://192.168.x.x/ipp/print -m everywhere
-lpstat -p
-```
-
-SANE — edit `/etc/sane.d/airscan.conf`, under `[devices]`:
-```
-"PrinterName" = http://192.168.x.x:80/eSCL, eSCL
-```
-Then verify with `scanimage -L`.
-
-The name must match exactly in: PrintServer printer name, CUPS queue name, and `airscan.conf` entry.
-
-### 3. Add a user
-1. Users → Add User
-2. Enter username, password
-3. Select a Role (`admin` or `user`)
+### 3. Send Private Shared Document to Specific User
+1. Open **Shared Documents** menu in Dashboard or Mobile UI.
+2. Select target user from dropdown (e.g. `user1` or `Semua User`).
+3. Upload file (PDF, DOCX, TXT, PNG, JPG).
+4. The target user receives a `📩 1 Baru` badge notification on their mobile UI and can view/download/print the document.
 
 ### 4. Enable scan-to-folder from the printer
 1. Settings → Scans → copy the Samba config block
@@ -227,12 +228,6 @@ Or use Settings → Printers → Add → enter the IPP URL.
 
 ### macOS
 System Settings → Printers & Scanners → **+** → *IP* tab → Protocol **Internet Printing Protocol - IPP**, Address `SERVER_IP:631`, Queue `printers/PrinterName`.
-
-### Without installing anything
-Open `http://SERVER_IP:3003`, log in, and use **Print** to upload a file (PDF, Office documents, images, text) and send it to any printer. Phones can use the **Mobile QR** page (`/mobile`).
-
-### Scanning to the server
-Scanner-to-folder is done from the printer panel to `\\SERVER_IP\scans` (see *Enable scan-to-folder* above). Clients can then download scans from the dashboard **Scans** page.
 
 ---
 
