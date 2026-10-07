@@ -1709,7 +1709,7 @@ loadServerDocs();
 // ── Shared Docs management page (Admin UI route) ────────────────────────────
 // QR token generation handled by Users view JS (frontend calls /api/mobile/token)
 // USER_ALLOWED must include shared-docs API for mobile users
-USER_ALLOWED.push(/^\/api\/shared-docs$/, /^\/api\/mobile\/print-shared$/, /^\/api\/cups\/printers\/detail$/, /^\/api\/cups\/jobs$/, /^\/mobile$/, /^\/api\/mobile\/qr-image$/);
+USER_ALLOWED.push(/^\/api\/shared-docs$/, /^\/api\/mobile\/print-shared$/, /^\/api\/cups\/printers\/detail$/, /^\/api\/cups\/jobs$/, /^\/mobile$/, /^\/api\/mobile\/qr-image$/, /^\/api\/analytics$/);
 // Note: /api/scans and /api/scans/download/ are already in USER_ALLOWED (line 217)
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3854,7 +3854,16 @@ async function renderAnalyticsView() {
   document.getElementById('content').innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)"><span class="spin"></span></div>';
 
   try {
-    const data = await fetch('/api/analytics').then(r => r.json());
+    const r = await fetch('/api/analytics');
+    if (!r.ok) {
+      if (r.status === 401) { location.href = '/login'; return; }
+      const errTxt = await r.text();
+      let errMsg = 'HTTP ' + r.status;
+      try { const d = JSON.parse(errTxt); if (d.error) errMsg = d.error; } catch {}
+      document.getElementById('content').innerHTML = '<div style="color:var(--red,#ef4444);padding:20px;text-align:center;">Gagal memuat data Dashboard Analytics: ' + esc(errMsg) + '</div>';
+      return;
+    }
+    const data = await r.json();
     const s = data.summary || {};
     const pPrinter = data.paperPerPrinter || [];
     const pUser = data.paperPerUser || [];
