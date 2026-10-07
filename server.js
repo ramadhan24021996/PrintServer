@@ -3348,7 +3348,7 @@ button{cursor:pointer;border:none;border-radius:8px;padding:8px 16px;font-size:.
 .hist-group .data-table{margin:0;border-radius:0;border:none;border-top:1px solid var(--border)}
 
 /* Settings view */
-.settings-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:20px;max-width:640px}
+.settings-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:20px;max-width:100%}
 .settings-card h3{font-size:.92rem;font-weight:700;color:#f1f5f9;margin-bottom:4px}
 .settings-card .desc{font-size:.78rem;color:var(--muted);margin-bottom:16px}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
@@ -4805,8 +4805,8 @@ async function renderSharedDocsView() {
   document.getElementById('view-title').textContent = 'Shared Documents';
   document.getElementById('view-sub').textContent = 'Dokumen bersama untuk mobile print';
   document.getElementById('content').innerHTML =
-    '<div class="settings-card">'
-    + '<h3>\u{1F4C1} Shared Documents</h3>'
+    '<div class="settings-card" style="max-width:100%">'
+    + '<h3>📁 Shared Documents</h3>'
     + '<div style="font-size:.85rem;color:var(--muted);margin-bottom:14px;">'
     + 'Upload dokumen di sini agar bisa dipilih dan dicetak oleh mobile user melalui QR link mereka.<br>'
     + 'Format yang didukung: PDF, DOCX, DOC, TXT, JPG, PNG (maks 50MB).'
@@ -4871,9 +4871,9 @@ async function renderSharedDocsSection() {
       : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px">Belum ada riwayat aktivitas</td></tr>';
 
     container.innerHTML =
-      '<div style="margin-bottom:16px;background:rgba(15,23,42,0.4);border:1px solid var(--border);border-radius:12px;padding:12px;">' +
-        '<table class="data-table">' +
-          '<thead><tr><th>Nama File</th><th>Pengirim</th><th>Target Penerima</th><th>Ukuran</th><th>Waktu Upload</th><th>Aksi</th></tr></thead>' +
+      '<div style="margin-bottom:20px;background:rgba(15,23,42,0.4);border:1px solid var(--border);border-radius:12px;padding:12px;overflow-x:auto;">' +
+        '<table class="data-table" style="width:100%;border-collapse:separate;border-spacing:0;">' +
+          '<thead><tr style="background:rgba(255,255,255,0.03)"><th style="padding:10px 12px">Nama File</th><th style="padding:10px 12px">Pengirim</th><th style="padding:10px 12px">Target Penerima</th><th style="padding:10px 12px">Ukuran</th><th style="padding:10px 12px">Waktu Upload</th><th style="padding:10px 12px">Aksi</th></tr></thead>' +
           '<tbody>' + rows + '</tbody>' +
         '</table>' +
         '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
@@ -4887,10 +4887,12 @@ async function renderSharedDocsSection() {
       '</div>' +
 
       '<h4 style="margin:20px 0 10px;color:#f1f5f9;font-size:1rem;display:flex;align-items:center;gap:8px;">📜 Riwayat Aktivitas Shared Documents</h4>' +
-      '<table class="data-table" style="font-size:.8rem">' +
-        '<thead><tr><th>Waktu</th><th>Aktivitas</th><th>Pengguna</th><th>Nama Dokumen</th><th>Target</th><th>Detail</th></tr></thead>' +
-        '<tbody>' + histRows + '</tbody>' +
-      '</table>';
+      '<div style="overflow-x:auto;background:rgba(15,23,42,0.4);border:1px solid var(--border);border-radius:12px;padding:12px;">' +
+        '<table class="data-table" style="width:100%;font-size:.8rem;border-collapse:separate;border-spacing:0;">' +
+          '<thead><tr style="background:rgba(255,255,255,0.03)"><th style="padding:10px 12px">Waktu</th><th style="padding:10px 12px">Aktivitas</th><th style="padding:10px 12px">Pengguna</th><th style="padding:10px 12px">Nama Dokumen</th><th style="padding:10px 12px">Target</th><th style="padding:10px 12px">Detail</th></tr></thead>' +
+          '<tbody>' + histRows + '</tbody>' +
+        '</table>' +
+      '</div>';
   } catch {
     container.innerHTML = '<div style="color:var(--muted);padding:10px">Gagal memuat dokumen bersama</div>';
   }
