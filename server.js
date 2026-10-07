@@ -3898,7 +3898,7 @@ function printCardPanel(p) {
 function renderPrintView() {
   document.getElementById('view-title').textContent='Print';
   document.getElementById('view-sub').textContent='Send a file to any CUPS printer';
-  const html=\`<div style="max-width:520px">
+  const html=\`<div style="max-width:580px;margin:20px auto 40px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
     <div class="print-panel" id="pp-main">
       <div class="drop-zone" id="dz-main" onclick="document.getElementById('pf-main').click()" ondragover="dzDrag(event,'main')" ondragleave="dzLeave('main')" ondrop="dzDrop(event,'main')">
         <input type="file" id="pf-main" accept=".pdf,.doc,.docx,.dot,.dotx,.docm,.rtf,.odt,.txt,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx" onchange="dzFile('main',this.files[0])"/>
