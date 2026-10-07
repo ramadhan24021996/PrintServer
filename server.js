@@ -5125,13 +5125,25 @@ async function saveUserEdit(username) {
     const d = await r.json();
     if (d.ok) {
       closeEditUserModal();
+      await renderUsersView();
       showUsersStatus('✅ User ' + username + ' berhasil diperbarui', 'ok');
-      renderUsersView();
+      showPrintSuccessModal({
+        title: 'Berhasil',
+        message: 'Perubahan akun user <strong>' + esc(username) + '</strong> berhasil disimpan!'
+      });
     } else {
-      alert('Gagal: ' + (d.error || 'Unknown error'));
+      showUsersStatus('❌ ' + (d.error || 'Failed'), 'err');
+      showPrintErrorModal({
+        title: 'Gagal',
+        message: 'Gagal memperbarui user: ' + (d.error || 'Unknown error')
+      });
     }
   } catch (e) {
-    alert('Gagal: ' + e.message);
+    showUsersStatus('❌ ' + e.message, 'err');
+    showPrintErrorModal({
+      title: 'Gagal',
+      message: e.message
+    });
   }
 }
 
@@ -5168,6 +5180,16 @@ async function deleteUser(username) {
   const r = await fetch('/api/users/'+encodeURIComponent(username), {method:'DELETE'});
   const d = await r.json();
   if (d.ok) renderUsersView(); else showUsersStatus('❌ '+(d.error||'Failed'),'err');
+}
+
+function showUsersStatus(msg, type) {
+  const el = document.getElementById('users-status');
+  if (el) {
+    el.style.display = '';
+    el.className = 'settings-status ' + (type === 'ok' ? 'print-status ok' : 'print-status err');
+    el.textContent = msg;
+  }
+  showToast(msg);
 }
 
 function showSettingsStatus(msg,type) {
