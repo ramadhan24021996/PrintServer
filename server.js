@@ -1715,116 +1715,138 @@ USER_ALLOWED.push(/^\/api\/shared-docs$/, /^\/api\/mobile\/print-shared$/, /^\/a
 // ══════════════════════════════════════════════════════════════════════════════
 // END MOBILE QR PRINT FEATURE
 // ══════════════════════════════════════════════════════════════════════════════
-app.get('/api/analytics', (_req, res) => {
-  const printers = PRINTERS || [];
-  const printJobs = [...(PRINT_JOBS_HIST || []), ...(CUPS_JOBS_HIST || [])];
-  const scanJobs = SCAN_HISTORY || [];
+app.get('/api/analytics', async (_req, res) => {
+  try {
+    const printers = (typeof PRINTERS !== 'undefined' && Array.isArray(PRINTERS)) ? PRINTERS : [];
+    let printJobs = [];
+    try {
+      if (typeof getCompletedJobs === 'function') {
+        printJobs = (await getCompletedJobs()) || [];
+      }
+    } catch(e) {
+      console.error('Error fetching completed jobs for analytics:', e);
+    }
 
-  let totalPages = printJobs.reduce((sum, j) => sum + (Number(j.pages) || 1), 0);
-  printers.forEach(p => { if (p.pages) totalPages += Number(p.pages); });
-  if (totalPages === 0) totalPages = 45821;
+    let scanJobs = [];
+    try {
+      if (typeof SCAN_DIR !== 'undefined' && fs.existsSync(SCAN_DIR)) {
+        const scanFiles = fs.readdirSync(SCAN_DIR);
+        scanJobs = scanFiles.map(f => ({ name: f, details: f }));
+      }
+    } catch(e) {
+      console.error('Error reading scan dir for analytics:', e);
+    }
 
-  const onlinePrinters = printers.filter(p => p.online !== false).length;
-  const totalPrintersCount = Math.max(printers.length, 24);
-  const activePrintersCount = printers.length > 0 ? onlinePrinters : 21;
+    let totalPages = printJobs.reduce((sum, j) => sum + (Number(j.pages) || 1), 0);
+    printers.forEach(p => { if (p.pages) totalPages += Number(p.pages); });
+    if (totalPages === 0) totalPages = 45821;
 
-  let totalScans = scanJobs.length;
-  if (totalScans === 0) totalScans = 8945;
+    const onlinePrinters = printers.filter(p => p.online !== false).length;
+    const totalPrintersCount = Math.max(printers.length, 24);
+    const activePrintersCount = printers.length > 0 ? onlinePrinters : 21;
 
-  let lowTonerWarnings = printers.filter(p => p.toners && p.toners.some(t => t.pct < 20 && !t.unknown)).length;
-  if (lowTonerWarnings === 0) lowTonerWarnings = 6;
+    let totalScans = scanJobs.length;
+    if (totalScans === 0) totalScans = 8945;
 
-  const printerUsageMap = {};
-  printJobs.forEach(j => {
-    const pName = j.printer || 'Generic Printer';
-    printerUsageMap[pName] = (printerUsageMap[pName] || 0) + (Number(j.pages) || 1);
-  });
+    let lowTonerWarnings = printers.filter(p => p.toners && p.toners.some(t => t.pct < 20 && !t.unknown)).length;
+    if (lowTonerWarnings === 0) lowTonerWarnings = 6;
 
-  const defaultPrinters = [
-    { name: 'Canon iR-ADV', pages: 9120 },
-    { name: 'HP PageWide', pages: 7650 },
-    { name: 'Epson WorkForce', pages: 5400 },
-    { name: 'Xerox VersaLink', pages: 4880 },
-    { name: 'Canon PIXMA', pages: 3210 }
-  ];
+    const printerUsageMap = {};
+    printJobs.forEach(j => {
+      const pName = j.printer || j.dest || 'Generic Printer';
+      printerUsageMap[pName] = (printerUsageMap[pName] || 0) + (Number(j.pages) || 1);
+    });
 
-  const paperPerPrinter = Object.keys(printerUsageMap).length > 0
-    ? Object.keys(printerUsageMap).map(name => ({ name, pages: printerUsageMap[name] }))
-    : defaultPrinters;
+    const defaultPrinters = [
+      { name: 'Canon iR-ADV', pages: 9120 },
+      { name: 'HP PageWide', pages: 7650 },
+      { name: 'Epson WorkForce', pages: 5400 },
+      { name: 'Xerox VersaLink', pages: 4880 },
+      { name: 'Canon PIXMA', pages: 3210 }
+    ];
 
-  const userUsageMap = {};
-  printJobs.forEach(j => {
-    const uName = j.user || 'admin';
-    userUsageMap[uName] = (userUsageMap[uName] || 0) + (Number(j.pages) || 1);
-  });
+    const paperPerPrinter = Object.keys(printerUsageMap).length > 0
+      ? Object.keys(printerUsageMap).map(name => ({ name, pages: printerUsageMap[name] })).sort((a,b) => b.pages - a.pages)
+      : defaultPrinters;
 
-  const defaultUsers = [
-    { name: 'J. Smith', pages: 3450, avatar: '👤' },
-    { name: 'M. Chen', pages: 2980, avatar: '👤' },
-    { name: 'A. Garcia', pages: 2120, avatar: '👤' },
-    { name: 'S. Lee', pages: 1850, avatar: '👤' },
-    { name: 'K. Brown', pages: 1400, avatar: '👤' }
-  ];
+    const userUsageMap = {};
+    printJobs.forEach(j => {
+      const uName = j.user || j.username || 'admin';
+      userUsageMap[uName] = (userUsageMap[uName] || 0) + (Number(j.pages) || 1);
+    });
 
-  const paperPerUser = Object.keys(userUsageMap).length > 0
-    ? Object.keys(userUsageMap).map(name => ({ name, pages: userUsageMap[name], avatar: '👤' })).sort((a,b) => b.pages - a.pages).slice(0, 5)
-    : defaultUsers;
+    const defaultUsers = [
+      { name: 'J. Smith', pages: 3450, avatar: '👤' },
+      { name: 'M. Chen', pages: 2980, avatar: '👤' },
+      { name: 'A. Garcia', pages: 2120, avatar: '👤' },
+      { name: 'S. Lee', pages: 1850, avatar: '👤' },
+      { name: 'K. Brown', pages: 1400, avatar: '👤' }
+    ];
 
-  let saneScans = 0, cameraScans = 0;
-  scanJobs.forEach(s => {
-    if ((s.details || '').toLowerCase().includes('sane') || (s.details || '').toLowerCase().includes('hardware')) saneScans++;
-    else cameraScans++;
-  });
-  if (saneScans === 0 && cameraScans === 0) {
-    saneScans = 6215;
-    cameraScans = 2730;
+    const paperPerUser = Object.keys(userUsageMap).length > 0
+      ? Object.keys(userUsageMap).map(name => ({ name, pages: userUsageMap[name], avatar: '👤' })).sort((a,b) => b.pages - a.pages).slice(0, 5)
+      : defaultUsers;
+
+    let saneScans = 0, cameraScans = 0;
+    scanJobs.forEach(s => {
+      const d = (s.details || s.name || '').toLowerCase();
+      if (d.includes('sane') || d.includes('hardware') || d.includes('scan') || d.includes('.pdf') || d.includes('.png') || d.includes('.jpg')) saneScans++;
+      else cameraScans++;
+    });
+    if (saneScans === 0 && cameraScans === 0) {
+      saneScans = 6215;
+      cameraScans = 2730;
+    }
+
+    const printerHealth = printers.length > 0 ? printers.map(p => {
+      let statusBadge = p.online !== false ? 'Online' : 'Offline';
+      if (p.online !== false && p.toners && p.toners.some(t => t.pct < 20)) statusBadge = 'Low Toner';
+      if (p.online !== false && p.trays && p.trays.some(t => t.status === 'Empty' || t.pct < 10)) statusBadge = 'Low Paper';
+      return {
+        id: p.id,
+        name: p.name,
+        brand: p.brand || 'Printer',
+        location: p.location || 'Main Office',
+        status: statusBadge,
+        toners: p.toners && p.toners.length ? p.toners : [
+          { name: 'C', color: '#06b6d4', pct: 85 },
+          { name: 'M', color: '#ec4899', pct: 72 },
+          { name: 'Y', color: '#eab308', pct: 61 },
+          { name: 'K', color: '#64748b', pct: 79 }
+        ]
+      };
+    }) : [
+      { id: 1, name: 'Canon iR-ADV', brand: 'Canon', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
+      { id: 2, name: 'HP PageWide', brand: 'HP', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 80 }, { name: 'M', color: '#ec4899', pct: 65 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 88 }] },
+      { id: 3, name: 'Epson WorkForce', brand: 'Epson', location: 'Floor 3', status: 'Low Paper', toners: [{ name: 'C', color: '#06b6d4', pct: 90 }, { name: 'M', color: '#ec4899', pct: 85 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 75 }] },
+      { id: 4, name: 'Canon PIXMA', brand: 'Canon', location: 'Floor 3', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 15 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
+      { id: 5, name: 'Xerox VersaLink', brand: 'Xerox', location: 'Floor 3', status: 'Error', toners: [{ name: 'C', color: '#06b6d4', pct: 10 }, { name: 'M', color: '#ec4899', pct: 50 }, { name: 'Y', color: '#eab308', pct: 72 }, { name: 'K', color: '#64748b', pct: 79 }] },
+      { id: 6, name: 'Ricoh MP C3004', brand: 'Ricoh', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 45 }, { name: 'M', color: '#ec4899', pct: 55 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 70 }] },
+      { id: 7, name: 'Lexmark CX725', brand: 'Lexmark', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 70 }, { name: 'M', color: '#ec4899', pct: 60 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 65 }] },
+      { id: 8, name: 'Ricoh Aficio', brand: 'Ricoh', location: 'Floor 1', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 18 }, { name: 'K', color: '#64748b', pct: 79 }] }
+    ];
+
+    res.json({
+      summary: {
+        totalPages,
+        activePrinters: activePrintersCount,
+        totalPrinters: totalPrintersCount,
+        totalScans,
+        lowTonerWarnings
+      },
+      paperPerPrinter,
+      paperPerUser,
+      scannerUsage: {
+        saneScans,
+        cameraScans,
+        totalScans: saneScans + cameraScans
+      },
+      printerHealth
+    });
+  } catch(e) {
+    console.error('Error generating analytics:', e);
+    res.status(500).json({ error: e.message });
   }
-
-  const printerHealth = printers.length > 0 ? printers.map(p => {
-    let statusBadge = p.online ? 'Online' : 'Offline';
-    if (p.online && p.toners && p.toners.some(t => t.pct < 20)) statusBadge = 'Low Toner';
-    if (p.online && p.trays && p.trays.some(t => t.status === 'Empty' || t.pct < 10)) statusBadge = 'Low Paper';
-    return {
-      id: p.id,
-      name: p.name,
-      brand: p.brand || 'Printer',
-      location: p.location || 'Floor 3',
-      status: statusBadge,
-      toners: p.toners && p.toners.length ? p.toners : [
-        { name: 'C', color: '#06b6d4', pct: 85 },
-        { name: 'M', color: '#ec4899', pct: 72 },
-        { name: 'Y', color: '#eab308', pct: 61 },
-        { name: 'K', color: '#64748b', pct: 79 }
-      ]
-    };
-  }) : [
-    { id: 1, name: 'Canon iR-ADV', brand: 'Canon', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
-    { id: 2, name: 'HP PageWide', brand: 'HP', location: 'Floor 3', status: 'Online', toners: [{ name: 'C', color: '#06b6d4', pct: 80 }, { name: 'M', color: '#ec4899', pct: 65 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 88 }] },
-    { id: 3, name: 'Epson WorkForce', brand: 'Epson', location: 'Floor 3', status: 'Low Paper', toners: [{ name: 'C', color: '#06b6d4', pct: 90 }, { name: 'M', color: '#ec4899', pct: 85 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 75 }] },
-    { id: 4, name: 'Canon PIXMA', brand: 'Canon', location: 'Floor 3', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 15 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 79 }] },
-    { id: 5, name: 'Xerox VersaLink', brand: 'Xerox', location: 'Floor 3', status: 'Error', toners: [{ name: 'C', color: '#06b6d4', pct: 10 }, { name: 'M', color: '#ec4899', pct: 50 }, { name: 'Y', color: '#eab308', pct: 72 }, { name: 'K', color: '#64748b', pct: 79 }] },
-    { id: 6, name: 'Ricoh MP C3004', brand: 'Ricoh', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 45 }, { name: 'M', color: '#ec4899', pct: 55 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 70 }] },
-    { id: 7, name: 'Lexmark CX725', brand: 'Lexmark', location: 'Floor 1', status: 'Offline', toners: [{ name: 'C', color: '#06b6d4', pct: 70 }, { name: 'M', color: '#ec4899', pct: 60 }, { name: 'Y', color: '#eab308', pct: 61 }, { name: 'K', color: '#64748b', pct: 65 }] },
-    { id: 8, name: 'Ricoh Aficio', brand: 'Ricoh', location: 'Floor 1', status: 'Low Toner', toners: [{ name: 'C', color: '#06b6d4', pct: 85 }, { name: 'M', color: '#ec4899', pct: 72 }, { name: 'Y', color: '#eab308', pct: 18 }, { name: 'K', color: '#64748b', pct: 79 }] }
-  ];
-
-  res.json({
-    summary: {
-      totalPages,
-      activePrinters: activePrintersCount,
-      totalPrinters: totalPrintersCount,
-      totalScans,
-      lowTonerWarnings
-    },
-    paperPerPrinter,
-    paperPerUser,
-    scannerUsage: {
-      saneScans,
-      cameraScans,
-      totalScans: saneScans + cameraScans
-    },
-    printerHealth
-  });
 });
 
 app.get('/api/users', (_req,res) => {
