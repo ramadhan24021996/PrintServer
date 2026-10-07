@@ -4589,7 +4589,7 @@ async function renderUsersView() {
           : '<span class="chip" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)">Semua Printer</span>');
 
     const notifs = u.notifications || { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true };
-    const notifBadges = '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
+    const notifBadges = '<div style="display:flex;flex-wrap:nowrap;gap:4px;align-items:center;white-space:nowrap;">' +
       '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.printSuccess ? 'rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2)') + '">🖨️' + (notifs.printSuccess ? '✓' : '✕') + '</span>' +
       '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.printFailed ? 'rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)' : 'rgba(148,163,184,0.1);color:#94a3b8;border:1px solid rgba(148,163,184,0.2)') + '">🖨️' + (notifs.printFailed ? '✓' : '✕') + '</span>' +
       '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.scanSuccess ? 'rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3)' : 'rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2)') + '">📷' + (notifs.scanSuccess ? '✓' : '✕') + '</span>' +
@@ -4601,9 +4601,9 @@ async function renderUsersView() {
       '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;"><span class="chip" style="background:' + (u.role==='admin'?'rgba(59,130,246,.18);color:#60a5fa;border:1px solid rgba(59,130,246,.35)':'rgba(148,163,184,.15);color:#cbd5e1;border:1px solid rgba(148,163,184,.25)') + '">' + esc(u.role) + '</span></td>' +
       '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;font-size:0.85rem;color:#cbd5e1;">' + esc(u.phone || '-') + '</td>' +
       '<td style="vertical-align:middle;padding:12px 14px;">' + accessText + '</td>' +
-      '<td style="vertical-align:middle;padding:12px 14px;">' + notifBadges + '</td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;">' + notifBadges + '</td>' +
       '<td style="vertical-align:middle;padding:12px 14px;">' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">' +
+        '<div style="display:flex;gap:6px;flex-wrap:nowrap;align-items:center;">' +
           '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="resetUserPassword(\\\'' + escJs(u.username) + '\\\')">🔑 Reset</button>' +
           '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="openEditUserModal(\\\'' + escJs(u.username) + '\\\')">⚙️ Edit</button>' +
           '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="toggleUserRole(\\\'' + escJs(u.username) + '\\\',\\\'' + (u.role==='admin'?'user':'admin') + '\\\')">' + (u.role==='admin'?'👤 Make User':'🛡️ Make Admin') + '</button>' +
@@ -4625,7 +4625,7 @@ async function renderUsersView() {
   ) : '<div style="color:var(--muted);font-size:0.85rem;margin-top:6px">No printers configured yet</div>';
 
   document.getElementById('content').innerHTML =
-    '<div class="settings-card" style="margin-bottom:24px">' +
+    '<div class="settings-card" style="max-width:100%;margin-bottom:24px">' +
       '<h3 style="margin-bottom:14px;font-size:1.1rem;display:flex;align-items:center;gap:8px">➕ Add New User</h3>' +
       '<div class="field-row" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">' +
         '<div class="field" style="flex:1;min-width:180px"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
@@ -4651,7 +4651,7 @@ async function renderUsersView() {
       '<button class="btn-primary" onclick="addUser()" style="padding:8px 20px;font-size:0.9rem;border-radius:8px">Create User</button>' +
       '<div id="users-status" class="settings-status"></div>' +
     '</div>' +
-    '<div class="settings-card">' +
+    '<div class="settings-card" style="max-width:100%">' +
       '<h3 style="margin-bottom:16px;font-size:1.1rem;display:flex;align-items:center;gap:8px">👥 Existing Users</h3>' +
       '<div style="overflow-x:auto">' +
         '<table class="data-table" style="width:100%;border-collapse:separate;border-spacing:0">' +
