@@ -4462,53 +4462,71 @@ async function renderUsersView() {
   const rows = users.map(u => {
     const isUserRole = u.role === 'user';
     const accessText = u.role === 'admin'
-      ? '<span style="color:var(--muted)">All</span>'
+      ? '<span class="chip" style="background:rgba(148,163,184,.12);color:var(--subtle);border:1px solid rgba(148,163,184,.2)">Semua Printer (Admin)</span>'
       : (Array.isArray(u.printerAccess) && u.printerAccess.length
-          ? u.printerAccess.map(id => '<span class="chip" style="background:rgba(59,130,246,.15);color:var(--blue);margin-right:4px;margin-bottom:4px;display:inline-block;">' + esc(printerName(id)) + '</span>').join('')
-          : '<span style="color:var(--muted)">All</span>');
+          ? '<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:320px;align-items:center">' +
+              u.printerAccess.map(id => '<span class="chip" style="background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.3);padding:2px 8px;border-radius:6px;font-size:0.75rem;font-weight:500;">' + esc(printerName(id)) + '</span>').join('') +
+            '</div>'
+          : '<span class="chip" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)">Semua Printer</span>');
 
-    return '<tr>' +
-      '<td style="font-weight:600;color:#f1f5f9">' + esc(u.username) + '</td>' +
-      '<td><span class="chip" style="background:' + (u.role==='admin'?'rgba(59,130,246,.15);color:var(--blue)':'rgba(148,163,184,.15);color:var(--subtle)') + '">' + esc(u.role) + '</span></td>' +
-      '<td>' + accessText + '</td>' +
-      '<td style="display:flex;gap:6px;flex-wrap:wrap">' +
-        '<button class="btn-outline btn-sm" onclick="resetUserPassword(\\\'' + escJs(u.username) + '\\\')">Reset Password</button>' +
-        '<button class="btn-outline btn-sm" onclick="toggleUserRole(\\\'' + escJs(u.username) + '\\\',\\\'' + (u.role==='admin'?'user':'admin') + '\\\')">Make ' + (u.role==='admin'?'User':'Admin') + '</button>' +
-        (isUserRole ? '<button class="btn-outline btn-sm" onclick="editUserPrinterAccess(\\\'' + escJs(u.username) + '\\\')">Edit Printer Access</button>' : '') +
-        '<button class="btn-danger btn-sm" onclick="deleteUser(\\\'' + escJs(u.username) + '\\\')">Delete</button>' +
+    return '<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">' +
+      '<td style="vertical-align:middle;font-weight:700;color:#f8fafc;padding:12px 14px;white-space:nowrap;">' + esc(u.username) + '</td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;"><span class="chip" style="background:' + (u.role==='admin'?'rgba(59,130,246,.18);color:#60a5fa;border:1px solid rgba(59,130,246,.35)':'rgba(148,163,184,.15);color:#cbd5e1;border:1px solid rgba(148,163,184,.25)') + '">' + esc(u.role) + '</span></td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;">' + accessText + '</td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;">' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">' +
+          '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="resetUserPassword(\\\'' + escJs(u.username) + '\\\')">🔑 Reset</button>' +
+          '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="toggleUserRole(\\\'' + escJs(u.username) + '\\\',\\\'' + (u.role==='admin'?'user':'admin') + '\\\')">' + (u.role==='admin'?'👤 Make User':'🛡️ Make Admin') + '</button>' +
+          (isUserRole ? '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="editUserPrinterAccess(\\\'' + escJs(u.username) + '\\\')">🖨️ Edit Akses</button>' : '') +
+          '<button class="btn-danger btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="deleteUser(\\\'' + escJs(u.username) + '\\\')">🗑️ Hapus</button>' +
+        '</div>' +
       '</td>' +
     '</tr>';
   }).join('');
 
-  const printerCheckboxes = printers.map(p =>
-    '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:4px 0;cursor:pointer">' +
-      '<input type="checkbox" class="nu-printer-cb" value="' + esc(p.id) + '" style="width:15px;height:15px;flex-shrink:0;margin:0;accent-color:var(--blue)"/><span>' + esc(p.name) + ' <span style="color:var(--muted);font-size:.8rem">(' + esc(p.brand||'Generic') + ')</span></span>' +
-    '</label>'
-  ).join('') || '<div style="color:var(--muted)">No printers configured yet</div>';
+  const printerCheckboxes = printers.length ? (
+    '<div style="max-height:140px;overflow-y:auto;border:1px solid var(--border);padding:10px;border-radius:8px;background:rgba(0,0,0,0.2);margin-top:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px">' +
+      printers.map(p =>
+        '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:0;cursor:pointer;font-size:0.84rem;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05)">' +
+          '<input type="checkbox" class="nu-printer-cb" value="' + esc(p.id) + '" style="width:15px;height:15px;flex-shrink:0;margin:0;accent-color:var(--blue)"/>' +
+          '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.name) + ' <span style="color:var(--muted);font-size:.75rem">(' + esc(p.brand||'Generic') + ')</span></span>' +
+        '</label>'
+      ).join('') +
+    '</div>'
+  ) : '<div style="color:var(--muted);font-size:0.85rem;margin-top:6px">No printers configured yet</div>';
 
   document.getElementById('content').innerHTML =
-    '<div class="settings-card">' +
-      '<h3>➕ Add User</h3>' +
-      '<div class="field-row">' +
-        '<div class="field"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
-        '<div class="field"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>' +
+    '<div class="settings-card" style="margin-bottom:24px">' +
+      '<h3 style="margin-bottom:14px;font-size:1.1rem;display:flex;align-items:center;gap:8px">➕ Add New User</h3>' +
+      '<div class="field-row" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<div class="field" style="flex:1;min-width:200px"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
+        '<div class="field" style="flex:1;min-width:200px"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>' +
+        '<div class="field" style="width:200px"><label>Role</label>' +
+          '<select id="nu-role" onchange="onUserRoleChange(this.value)"><option value="user">User (Print + Scans only)</option><option value="admin">Admin (Full access)</option></select>' +
+        '</div>' +
       '</div>' +
-      '<div class="field" style="max-width:200px"><label>Role</label>' +
-        '<select id="nu-role" onchange="onUserRoleChange(this.value)"><option value="user">User (Print + Scans only)</option><option value="admin">Admin (Full access)</option></select>' +
-      '</div>' +
-      '<div class="field" id="nu-printer-access">' +
-        '<label>Restrict to printer(s) <span style="color:var(--muted);font-weight:400">— leave all unchecked to allow every printer</span></label>' +
+      '<div class="field" id="nu-printer-access" style="margin-bottom:16px">' +
+        '<label style="display:block;margin-bottom:4px;font-weight:600">Restrict to printer(s) <span style="color:var(--muted);font-weight:400">— leave all unchecked to allow every printer</span></label>' +
         printerCheckboxes +
       '</div>' +
-      '<button class="btn-primary" onclick="addUser()">Create User</button>' +
+      '<button class="btn-primary" onclick="addUser()" style="padding:8px 20px;font-size:0.9rem;border-radius:8px">Create User</button>' +
       '<div id="users-status" class="settings-status"></div>' +
     '</div>' +
     '<div class="settings-card">' +
-      '<h3>👥 Existing Users</h3>' +
-      '<table class="data-table">' +
-        '<thead><tr><th>Username</th><th>Role</th><th>Printer Access</th><th>Actions</th></tr></thead>' +
-        '<tbody>' + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:16px;">No users</td></tr>') + '</tbody>' +
-      '</table>' +
+      '<h3 style="margin-bottom:16px;font-size:1.1rem;display:flex;align-items:center;gap:8px">👥 Existing Users</h3>' +
+      '<div style="overflow-x:auto">' +
+        '<table class="data-table" style="width:100%;border-collapse:separate;border-spacing:0">' +
+          '<thead>' +
+            '<tr style="background:rgba(255,255,255,0.03)">' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">USERNAME</th>' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">ROLE</th>' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">PRINTER ACCESS</th>' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">ACTIONS</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody>' + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">No users found</td></tr>') + '</tbody>' +
+        '</table>' +
+      '</div>' +
     '</div>';
 }
 
