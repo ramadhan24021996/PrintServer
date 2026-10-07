@@ -1915,7 +1915,8 @@ syncCupsToPrinters();
 // ── Settings (Telegram + discovery) ────────────────────────────────────────────
 const DEFAULT_SETTINGS = {
   telegram: { enabled:false, botToken:'', chatId:'', alertToner:true, tonerThreshold:20,
-              alertOffline:true, alertJams:true, alertTrayEmpty:true, cooldownMinutes:240 },
+              alertOffline:true, alertJams:true, alertTrayEmpty:true, cooldownMinutes:240,
+              alertPrintSuccess:true, alertPrintFailed:true, alertScanSuccess:true, alertScanFailed:true },
   network: { scanSubnet:'' }
 };
 function loadSettings() {
@@ -1956,18 +1957,22 @@ async function notifyUserEvent(username, eventType, data = {}) {
     let title = '';
 
     if (eventType === 'PRINT_SUCCESS') {
+      if (SETTINGS.telegram.alertPrintSuccess === false) return;
       if (!notifs.printSuccess) return;
       icon = '🖨️ ✅';
       title = 'PRINT BERHASIL';
     } else if (eventType === 'PRINT_FAILED') {
+      if (SETTINGS.telegram.alertPrintFailed === false) return;
       if (!notifs.printFailed) return;
       icon = '🖨️ ❌';
       title = 'PRINT GAGAL';
     } else if (eventType === 'SCAN_SUCCESS') {
+      if (SETTINGS.telegram.alertScanSuccess === false) return;
       if (!notifs.scanSuccess) return;
       icon = '📷 ✅';
       title = 'SCAN BERHASIL';
     } else if (eventType === 'SCAN_FAILED') {
+      if (SETTINGS.telegram.alertScanFailed === false) return;
       if (!notifs.scanFailed) return;
       icon = '📷 ❌';
       title = 'SCAN GAGAL';
@@ -4519,6 +4524,10 @@ async function renderSettingsView() {
       <div class="toggle-row"><span class="toggle-label">Alert when printer goes offline</span><label class="switch"><input type="checkbox" id="s-offline" \${t.alertOffline!==false?'checked':''}><span class="slider"></span></label></div>
       <div class="toggle-row"><span class="toggle-label">Alert on jams / cover open / service</span><label class="switch"><input type="checkbox" id="s-jams" \${t.alertJams!==false?'checked':''}><span class="slider"></span></label></div>
       <div class="toggle-row"><span class="toggle-label">Alert when a paper tray is empty</span><label class="switch"><input type="checkbox" id="s-tray" \${t.alertTrayEmpty!==false?'checked':''}><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">Alert on Print Success</span><label class="switch"><input type="checkbox" id="s-print-succ" \${t.alertPrintSuccess!==false?'checked':''}><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">Alert on Print Failed</span><label class="switch"><input type="checkbox" id="s-print-fail" \${t.alertPrintFailed!==false?'checked':''}><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">Alert on Scan Success</span><label class="switch"><input type="checkbox" id="s-scan-succ" \${t.alertScanSuccess!==false?'checked':''}><span class="slider"></span></label></div>
+      <div class="toggle-row"><span class="toggle-label">Alert on Scan Failed</span><label class="switch"><input type="checkbox" id="s-scan-fail" \${t.alertScanFailed!==false?'checked':''}><span class="slider"></span></label></div>
       <div style="display:flex;gap:10px;margin-top:16px">
         <button class="btn-primary" onclick="saveTelegramSettings()">Save Settings</button>
         <button class="btn-outline" onclick="testTelegram()">Send Test Message</button>
@@ -5123,6 +5132,10 @@ async function saveTelegramSettings() {
     alertOffline:document.getElementById('s-offline').checked,
     alertJams:document.getElementById('s-jams').checked,
     alertTrayEmpty:document.getElementById('s-tray').checked,
+    alertPrintSuccess:document.getElementById('s-print-succ').checked,
+    alertPrintFailed:document.getElementById('s-print-fail').checked,
+    alertScanSuccess:document.getElementById('s-scan-succ').checked,
+    alertScanFailed:document.getElementById('s-scan-fail').checked,
   }};
   try {
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
