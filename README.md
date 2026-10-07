@@ -45,14 +45,16 @@ A powerful, self-hosted office printer & scanner management dashboard with SNMP-
 - **QR Token Access**: Admin generates per-user QR codes/tokens for instant passwordless mobile login.
 - **Mobile Action Hub**: Print files, capture camera scans, view private shared documents, and send print jobs directly from smartphones.
 
-### 👥 Multi-Printer User Management & Groups
+### 👥 Multi-Printer User Management & User Telegram Alerts
 - **Role-Based Auth**: `admin` (full management access) and `user` (restricted printer access).
+- **Phone Number / Chat ID**: Save active phone numbers or direct Telegram Chat IDs per user account.
+- **Per-User Telegram Event Checkboxes**: Fine-grained notification control per user for `Print Success`, `Print Failed`, `Scan Success`, and `Scan Failed`. Direct Telegram alerts are dispatched automatically upon event trigger.
 - **Multi-Printer Assignment**: Assign specific printer access privileges per user. Instant detection and auto-refresh on existing user lists upon creation with interactive feedback modals.
 - **User Groups**: Organize users and printers into customizable groups for structured access control.
 
 ### 🔔 Telegram Alerts
-- **Real-Time Notifications**: Instant alert messages for low toner, empty paper, paper jams, offline state, and back-online recovery.
-- **Fine-Grained Toggles**: Enable or disable specific alert types individually.
+- **Real-Time Notifications**: Instant alert messages for print/scan events, low toner, empty paper, paper jams, offline state, and back-online recovery.
+- **Fine-Grained Toggles**: Enable or disable specific alert types individually for global system and per-user accounts.
 - **Alert Cooldown & Persistence**: Cooldown timer prevents duplicate spam; state is saved to disk so server restarts don't re-trigger existing alerts.
 - **Test Message Button**: Send a test alert to verify bot token and Chat ID.
 

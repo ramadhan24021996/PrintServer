@@ -72,15 +72,30 @@ async function verifyPassword(password, stored) {
     return false;
   }
 }
+function normalizeUser(u) {
+  if (!u) return u;
+  if (typeof u.phone !== 'string') u.phone = '';
+  if (!u.notifications || typeof u.notifications !== 'object') {
+    u.notifications = { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true };
+  } else {
+    u.notifications.printSuccess = u.notifications.printSuccess !== false;
+    u.notifications.scanSuccess = u.notifications.scanSuccess !== false;
+    u.notifications.printFailed = u.notifications.printFailed !== false;
+    u.notifications.scanFailed = u.notifications.scanFailed !== false;
+  }
+  return u;
+}
 function loadUsers() {
-  try { if (fs.existsSync(USERS_FILE)) return JSON.parse(fs.readFileSync(USERS_FILE,'utf8')); } catch {}
-  // first-run defaults — CHANGE THESE PASSWORDS after first login
-  const defaults = [
-    { username:'admin', role:'admin', password: hashPasswordSync('admin123') },
-    { username:'user',  role:'user',  password: hashPasswordSync('user123') },
-  ];
-  try { fs.writeFileSync(USERS_FILE, JSON.stringify(defaults,null,2)); } catch {}
-  return defaults;
+  let list = [];
+  try { if (fs.existsSync(USERS_FILE)) list = JSON.parse(fs.readFileSync(USERS_FILE,'utf8')); } catch {}
+  if (!Array.isArray(list) || !list.length) {
+    list = [
+      { username:'admin', role:'admin', password: hashPasswordSync('admin123'), phone:'', notifications: { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true } },
+      { username:'user',  role:'user',  password: hashPasswordSync('user123'), phone:'', notifications: { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true } },
+    ];
+    try { fs.writeFileSync(USERS_FILE, JSON.stringify(list,null,2)); } catch {}
+  }
+  return list.map(normalizeUser);
 }
 function saveUsers() {
   try {
@@ -1701,14 +1716,31 @@ USER_ALLOWED.push(/^\/api\/shared-docs$/, /^\/api\/mobile\/print-shared$/, /^\/a
 // END MOBILE QR PRINT FEATURE
 // ══════════════════════════════════════════════════════════════════════════════
 app.get('/api/users', (_req,res) => {
-  res.json({users: USERS.map(u=>({username:u.username, role:u.role, printerAccess:u.printerAccess||null}))});
+  res.json({users: USERS.map(u=>({
+    username: u.username,
+    role: u.role,
+    phone: u.phone || '',
+    notifications: u.notifications || { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true },
+    printerAccess: u.printerAccess || null
+  }))});
 });
 app.post('/api/users', express.json(), async (req,res) => {
-  const { username, password, role, printerAccess } = req.body || {};
+  const { username, password, role, printerAccess, phone, notifications } = req.body || {};
   if (!username || !password || !['admin','user'].includes(role)) return res.status(400).json({error:'username, password, and valid role required'});
   if (USERS.find(u=>u.username===username)) return res.status(409).json({error:'username already exists'});
   const hashedPassword = await hashPassword(password);
-  const newUser = { username, role, password: hashedPassword };
+  const newUser = {
+    username,
+    role,
+    password: hashedPassword,
+    phone: (phone || '').trim(),
+    notifications: {
+      printSuccess: notifications ? notifications.printSuccess !== false : true,
+      scanSuccess: notifications ? notifications.scanSuccess !== false : true,
+      printFailed: notifications ? notifications.printFailed !== false : true,
+      scanFailed: notifications ? notifications.scanFailed !== false : true
+    }
+  };
   if (role === 'user' && Array.isArray(printerAccess) && printerAccess.length) {
     newUser.printerAccess = printerAccess.map(String).filter(Boolean);
   }
@@ -1720,13 +1752,22 @@ app.post('/api/users', express.json(), async (req,res) => {
 app.put('/api/users/:username', express.json(), async (req,res) => {
   const u = USERS.find(x=>x.username===req.params.username);
   if (!u) return res.status(404).json({error:'not found'});
-  const { password, role, printerAccess } = req.body || {};
+  const { password, role, printerAccess, phone, notifications } = req.body || {};
   if (role) {
     if (!['admin','user'].includes(role)) return res.status(400).json({error:'invalid role'});
     if (u.username === 'admin' && role !== 'admin') return res.status(400).json({error:'cannot demote primary admin user'});
     u.role = role;
   }
   if (password) u.password = await hashPassword(password);
+  if (phone !== undefined) u.phone = (phone || '').trim();
+  if (notifications && typeof notifications === 'object') {
+    u.notifications = {
+      printSuccess: notifications.printSuccess !== false,
+      scanSuccess: notifications.scanSuccess !== false,
+      printFailed: notifications.printFailed !== false,
+      scanFailed: notifications.scanFailed !== false
+    };
+  }
   if (printerAccess !== undefined) {
     if (Array.isArray(printerAccess) && printerAccess.length) u.printerAccess = printerAccess.map(String).filter(Boolean);
     else delete u.printerAccess; // empty/[] => unrestricted
@@ -1903,6 +1944,61 @@ function sendTelegram(text, tokenOverride, chatIdOverride) {
     req.on('timeout', () => { req.destroy(); resolve({ok:false,error:'timeout'}); });
     req.write(payload); req.end();
   });
+}
+
+async function notifyUserEvent(username, eventType, data = {}) {
+  try {
+    if (!SETTINGS.telegram || !SETTINGS.telegram.enabled) return;
+    const user = (USERS || []).find(u => u.username && u.username.toLowerCase() === String(username || '').toLowerCase());
+    const notifs = user && user.notifications ? user.notifications : { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true };
+
+    let icon = '';
+    let title = '';
+
+    if (eventType === 'PRINT_SUCCESS') {
+      if (!notifs.printSuccess) return;
+      icon = '🖨️ ✅';
+      title = 'PRINT BERHASIL';
+    } else if (eventType === 'PRINT_FAILED') {
+      if (!notifs.printFailed) return;
+      icon = '🖨️ ❌';
+      title = 'PRINT GAGAL';
+    } else if (eventType === 'SCAN_SUCCESS') {
+      if (!notifs.scanSuccess) return;
+      icon = '📷 ✅';
+      title = 'SCAN BERHASIL';
+    } else if (eventType === 'SCAN_FAILED') {
+      if (!notifs.scanFailed) return;
+      icon = '📷 ❌';
+      title = 'SCAN GAGAL';
+    } else {
+      return;
+    }
+
+    const timeStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+    let msg = `${icon} <b>${title}</b>\n` +
+      `• <b>User:</b> ${esc(username || 'System')}\n`;
+
+    if (data.docName) msg += `• <b>Dokumen:</b> ${esc(data.docName)}\n`;
+    if (data.scanName) msg += `• <b>File Scan:</b> ${esc(data.scanName)}\n`;
+    if (data.printerName) msg += `• <b>Printer:</b> ${esc(data.printerName)}\n`;
+    if (data.scanType) msg += `• <b>Tipe Scan:</b> ${esc(data.scanType)}\n`;
+    if (data.scanFormat) msg += `• <b>Format:</b> ${esc(data.scanFormat)}\n`;
+    if (data.jobId) msg += `• <b>Job ID:</b> #${esc(data.jobId)}\n`;
+    if (data.error) msg += `• <b>Error:</b> <i>${esc(data.error)}</i>\n`;
+    msg += `• <b>Waktu:</b> ${timeStr}`;
+
+    // Send to default global Telegram bot Chat ID
+    await sendTelegram(msg);
+
+    // If user has direct Chat ID or No. HP configured, send direct alert as well
+    const userChatId = (user && (user.phone || user.telegramChatId || '')).trim();
+    if (userChatId && userChatId !== SETTINGS.telegram.chatId && /^\d+$/.test(userChatId)) {
+      await sendTelegram(msg, null, userChatId);
+    }
+  } catch (e) {
+    console.error('Failed to notifyUserEvent:', e.message);
+  }
 }
 
 // ── Alert state trackers ───────────────────────────────────────────────────────
@@ -2785,14 +2881,17 @@ app.post('/api/print', upload.single('file'), async (req,res) => {
     try{ await fs.promises.unlink(req.file.path); }catch{}
     return res.status(403).json({error:'Not permitted to print to this printer'});
   }
+  const username = req.user ? req.user.username : 'system';
+  const docName = req.file.originalname;
   try {
-    const docName = req.file.originalname;
     const result = await printFile(req.file.path, printer, copies||1, duplex||'none', color||'', docName);
     if (result.jobId) {
-      recordJobMetadata(result.jobId, docName, req.user ? req.user.username : 'system');
+      recordJobMetadata(result.jobId, docName, username);
     }
+    notifyUserEvent(username, 'PRINT_SUCCESS', { docName, printerName: printer, jobId: result.jobId });
     res.json({ok:true,...result});
   } catch(e) {
+    notifyUserEvent(username, 'PRINT_FAILED', { docName, printerName: printer, error: e.message });
     res.status(500).json({error:e.message});
   } finally {
     try { await fs.promises.unlink(req.file.path); } catch {}
@@ -2806,8 +2905,6 @@ app.get('/api/scans/download/:name', async (req,res) => {
   const full = path.join(SCAN_DIR, name);
   try {
     await fs.promises.access(full);
-    // ?inline=1 → open in browser (preview). Only for safe, browser-renderable types;
-    // the scan folder is a writable SMB share, so never render arbitrary files inline.
     if (req.query.inline === '1' && /\.(pdf|jpe?g|png)$/i.test(name)) {
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
@@ -2841,11 +2938,20 @@ app.post('/api/scans/trigger', async (req,res) => {
   if (allowed && !deviceMatchesAllowed(device, allowed)) {
     return res.status(403).json({error:'Not permitted to scan from this device'});
   }
-  try { const name = await triggerScan(device, source); res.json({ok:true, name}); }
-  catch(e) { res.status(500).json({error:e.message}); }
+  const username = req.user ? req.user.username : 'system';
+  try {
+    const name = await triggerScan(device, source);
+    notifyUserEvent(username, 'SCAN_SUCCESS', { scanName: name, scanType: 'Hardware SANE (' + (source || 'Flatbed') + ')', scanFormat: path.extname(name).toUpperCase() });
+    res.json({ok:true, name});
+  }
+  catch(e) {
+    notifyUserEvent(username, 'SCAN_FAILED', { scanType: 'Hardware SANE', error: e.message });
+    res.status(500).json({error:e.message});
+  }
 });
 app.post('/api/scans/upload', upload.single('scanFile'), async (req,res) => {
   if (!req.file) return res.status(400).json({error:'Tidak ada file yang diunggah'});
+  const username = req.user ? req.user.username : 'system';
   try {
     const origExt = path.extname(req.file.originalname).toLowerCase() || '.png';
     const ext = ['.pdf', '.png', '.jpg', '.jpeg', '.webp'].includes(origExt) ? origExt : '.png';
@@ -2854,8 +2960,10 @@ app.post('/api/scans/upload', upload.single('scanFile'), async (req,res) => {
     const destPath = path.join(SCAN_DIR, filename);
     await fs.promises.mkdir(SCAN_DIR, { recursive: true });
     await fs.promises.copyFile(req.file.path, destPath);
+    notifyUserEvent(username, 'SCAN_SUCCESS', { scanName: filename, scanType: 'Kamera HP', scanFormat: ext.toUpperCase() });
     res.json({ ok: true, name: filename });
   } catch(e) {
+    notifyUserEvent(username, 'SCAN_FAILED', { scanType: 'Kamera HP', error: e.message });
     res.status(500).json({ error: e.message });
   } finally {
     try { await fs.promises.unlink(req.file.path); } catch {}
@@ -4466,20 +4574,30 @@ async function renderUsersView() {
     const accessText = u.role === 'admin'
       ? '<span class="chip" style="background:rgba(148,163,184,.12);color:var(--subtle);border:1px solid rgba(148,163,184,.2)">Semua Printer (Admin)</span>'
       : (Array.isArray(u.printerAccess) && u.printerAccess.length
-          ? '<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:320px;align-items:center">' +
+          ? '<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:260px;align-items:center">' +
               u.printerAccess.map(id => '<span class="chip" style="background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.3);padding:2px 8px;border-radius:6px;font-size:0.75rem;font-weight:500;">' + esc(printerName(id)) + '</span>').join('') +
             '</div>'
           : '<span class="chip" style="background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)">Semua Printer</span>');
 
+    const notifs = u.notifications || { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true };
+    const notifBadges = '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
+      '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.printSuccess ? 'rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2)') + '">🖨️' + (notifs.printSuccess ? '✓' : '✕') + '</span>' +
+      '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.printFailed ? 'rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)' : 'rgba(148,163,184,0.1);color:#94a3b8;border:1px solid rgba(148,163,184,0.2)') + '">🖨️' + (notifs.printFailed ? '✓' : '✕') + '</span>' +
+      '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.scanSuccess ? 'rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3)' : 'rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2)') + '">📷' + (notifs.scanSuccess ? '✓' : '✕') + '</span>' +
+      '<span class="chip" style="font-size:0.7rem;padding:2px 6px;border-radius:4px;background:' + (notifs.scanFailed ? 'rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)' : 'rgba(148,163,184,0.1);color:#94a3b8;border:1px solid rgba(148,163,184,0.2)') + '">📷' + (notifs.scanFailed ? '✓' : '✕') + '</span>' +
+    '</div>';
+
     return '<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">' +
       '<td style="vertical-align:middle;font-weight:700;color:#f8fafc;padding:12px 14px;white-space:nowrap;">' + esc(u.username) + '</td>' +
       '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;"><span class="chip" style="background:' + (u.role==='admin'?'rgba(59,130,246,.18);color:#60a5fa;border:1px solid rgba(59,130,246,.35)':'rgba(148,163,184,.15);color:#cbd5e1;border:1px solid rgba(148,163,184,.25)') + '">' + esc(u.role) + '</span></td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;white-space:nowrap;font-size:0.85rem;color:#cbd5e1;">' + esc(u.phone || '-') + '</td>' +
       '<td style="vertical-align:middle;padding:12px 14px;">' + accessText + '</td>' +
+      '<td style="vertical-align:middle;padding:12px 14px;">' + notifBadges + '</td>' +
       '<td style="vertical-align:middle;padding:12px 14px;">' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">' +
           '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="resetUserPassword(\\\'' + escJs(u.username) + '\\\')">🔑 Reset</button>' +
+          '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="openEditUserModal(\\\'' + escJs(u.username) + '\\\')">⚙️ Edit</button>' +
           '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="toggleUserRole(\\\'' + escJs(u.username) + '\\\',\\\'' + (u.role==='admin'?'user':'admin') + '\\\')">' + (u.role==='admin'?'👤 Make User':'🛡️ Make Admin') + '</button>' +
-          (isUserRole ? '<button class="btn-outline btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="editUserPrinterAccess(\\\'' + escJs(u.username) + '\\\')">🖨️ Edit Akses</button>' : '') +
           '<button class="btn-danger btn-sm" style="padding:5px 10px;font-size:0.78rem;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;" onclick="deleteUser(\\\'' + escJs(u.username) + '\\\')">🗑️ Hapus</button>' +
         '</div>' +
       '</td>' +
@@ -4501,10 +4619,20 @@ async function renderUsersView() {
     '<div class="settings-card" style="margin-bottom:24px">' +
       '<h3 style="margin-bottom:14px;font-size:1.1rem;display:flex;align-items:center;gap:8px">➕ Add New User</h3>' +
       '<div class="field-row" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">' +
-        '<div class="field" style="flex:1;min-width:200px"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
-        '<div class="field" style="flex:1;min-width:200px"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>' +
-        '<div class="field" style="width:200px"><label>Role</label>' +
+        '<div class="field" style="flex:1;min-width:180px"><label>Username</label><input id="nu-username" placeholder="jdoe"/></div>' +
+        '<div class="field" style="flex:1;min-width:180px"><label>Password</label><input id="nu-password" type="password" placeholder="••••••••"/></div>' +
+        '<div class="field" style="flex:1;min-width:180px"><label>No. HP / Telegram Chat ID</label><input id="nu-phone" placeholder="081234567890 / Chat ID"/></div>' +
+        '<div class="field" style="width:180px"><label>Role</label>' +
           '<select id="nu-role" onchange="onUserRoleChange(this.value)"><option value="user">User (Print + Scans only)</option><option value="admin">Admin (Full access)</option></select>' +
+        '</div>' +
+      '</div>' +
+      '<div class="field" style="margin-bottom:14px">' +
+        '<label style="display:block;margin-bottom:6px;font-weight:600">📲 Notifikasi Alert Telegram <span style="color:var(--muted);font-weight:400">— centang notifikasi yang ingin diterima user</span></label>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;border:1px solid var(--border)">' +
+          '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;cursor:pointer;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05)"><input type="checkbox" id="nu-n-print-succ" checked style="accent-color:#22c55e"/> 🖨️ Print Success</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;cursor:pointer;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05)"><input type="checkbox" id="nu-n-print-fail" checked style="accent-color:#ef4444"/> 🖨️ Print Failed</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;cursor:pointer;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05)"><input type="checkbox" id="nu-n-scan-succ" checked style="accent-color:#3b82f6"/> 📷 Scan Success</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;cursor:pointer;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05)"><input type="checkbox" id="nu-n-scan-fail" checked style="accent-color:#f59e0b"/> 📷 Scan Failed</label>' +
         '</div>' +
       '</div>' +
       '<div class="field" id="nu-printer-access" style="margin-bottom:16px">' +
@@ -4522,11 +4650,13 @@ async function renderUsersView() {
             '<tr style="background:rgba(255,255,255,0.03)">' +
               '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">USERNAME</th>' +
               '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">ROLE</th>' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">NO. HP / CHAT ID</th>' +
               '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">PRINTER ACCESS</th>' +
+              '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">NOTIF TELEGRAM</th>' +
               '<th style="padding:12px 14px;border-bottom:1px solid var(--border)">ACTIONS</th>' +
             '</tr>' +
           '</thead>' +
-          '<tbody>' + (rows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">No users found</td></tr>') + '</tbody>' +
+          '<tbody>' + (rows || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">No users found</td></tr>') + '</tbody>' +
         '</table>' +
       '</div>' +
     '</div>';
@@ -4791,10 +4921,18 @@ function onUserRoleChange(val) {
 async function addUser() {
   const usernameInput = document.getElementById('nu-username');
   const passwordInput = document.getElementById('nu-password');
+  const phoneInput = document.getElementById('nu-phone');
   const username = usernameInput ? usernameInput.value.trim() : '';
   const password = passwordInput ? passwordInput.value : '';
+  const phone = phoneInput ? phoneInput.value.trim() : '';
   const role = document.getElementById('nu-role') ? document.getElementById('nu-role').value : 'user';
   const printerAccess = Array.from(document.querySelectorAll('.nu-printer-cb:checked')).map(cb => cb.value);
+
+  const printSuccess = document.getElementById('nu-n-print-succ') ? document.getElementById('nu-n-print-succ').checked : true;
+  const printFailed = document.getElementById('nu-n-print-fail') ? document.getElementById('nu-n-print-fail').checked : true;
+  const scanSuccess = document.getElementById('nu-n-scan-succ') ? document.getElementById('nu-n-scan-succ').checked : true;
+  const scanFailed = document.getElementById('nu-n-scan-fail') ? document.getElementById('nu-n-scan-fail').checked : true;
+  const notifications = { printSuccess, scanSuccess, printFailed, scanFailed };
 
   if (!username || !password) {
     showUsersStatus('Username and password required', 'err');
@@ -4806,13 +4944,14 @@ async function addUser() {
     const r = await fetch('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, role, printerAccess })
+      body: JSON.stringify({ username, password, role, printerAccess, phone, notifications })
     });
     const d = await r.json();
 
     if (d.ok) {
       if (usernameInput) usernameInput.value = '';
       if (passwordInput) passwordInput.value = '';
+      if (phoneInput) phoneInput.value = '';
       showUsersStatus('✅ User created', 'ok');
       showPrintSuccessModal({
         title: 'Successfully',
@@ -4829,6 +4968,107 @@ async function addUser() {
   } catch(e) {
     showUsersStatus('❌ ' + e.message, 'err');
     showPrintErrorModal({ title: 'Failed', message: e.message });
+  }
+}
+
+async function openEditUserModal(username) {
+  let users = [];
+  try { users = (await fetch('/api/users').then(x => x.json())).users || []; } catch {}
+  const target = users.find(u => u.username === username);
+  if (!target) return alert('User tidak ditemukan!');
+
+  let printers = [];
+  try { printers = (await fetch('/api/printers').then(x => x.json())).data || []; } catch {}
+
+  const currentAccess = new Set(target.printerAccess || []);
+  const notifs = target.notifications || { printSuccess: true, scanSuccess: true, printFailed: true, scanFailed: true };
+
+  const old = document.getElementById('edit-user-modal');
+  if (old) old.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'edit-user-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+  const printerCBs = printers.map(p => {
+    const checked = currentAccess.has(String(p.id)) || currentAccess.has(String(p.name)) ? 'checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;color:#e2e8f0;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);cursor:pointer;">' +
+      '<input type="checkbox" class="eu-printer-cb" value="' + esc(p.id) + '" ' + checked + ' style="width:15px;height:15px;accent-color:var(--blue);"/>' +
+      '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(p.name) + '</span>' +
+    '</label>';
+  }).join('') || '<div style="color:var(--muted);font-size:0.85rem;">Tidak ada printer terkonfigurasi</div>';
+
+  modal.innerHTML =
+    '<div style="background:#1e293b;color:#f8fafc;border-radius:16px;width:100%;max-width:520px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);border:1px solid var(--border);overflow:hidden;font-family:system-ui,sans-serif;">' +
+      '<div style="padding:18px 24px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;align-items:center;">' +
+        '<h3 style="margin:0;font-size:1.1rem;display:flex;align-items:center;gap:8px;">⚙️ Edit User — ' + esc(username) + '</h3>' +
+        '<button onclick="closeEditUserModal()" style="background:none;border:none;color:var(--muted);font-size:1.4rem;cursor:pointer;">✕</button>' +
+      '</div>' +
+      '<div style="padding:20px 24px;max-height:75vh;overflow-y:auto;">' +
+        '<div style="margin-bottom:14px;">' +
+          '<label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:6px;color:#cbd5e1;">No. HP / Telegram Chat ID</label>' +
+          '<input id="eu-phone" value="' + esc(target.phone || '') + '" placeholder="081234567890 atau Chat ID" style="width:100%;padding:10px;border-radius:8px;background:rgba(0,0,0,0.25);border:1px solid var(--border);color:#fff;font-size:0.9rem;"/>' +
+        '</div>' +
+
+        '<div style="margin-bottom:16px;">' +
+          '<label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:6px;color:#cbd5e1;">📲 Notifikasi Alert Telegram</label>' +
+          '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;border:1px solid var(--border);">' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;color:#e2e8f0;cursor:pointer;"><input type="checkbox" id="eu-n-print-succ" ' + (notifs.printSuccess !== false ? 'checked' : '') + ' style="accent-color:#22c55e;"/> 🖨️ Print Success</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;color:#e2e8f0;cursor:pointer;"><input type="checkbox" id="eu-n-print-fail" ' + (notifs.printFailed !== false ? 'checked' : '') + ' style="accent-color:#ef4444;"/> 🖨️ Print Failed</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;color:#e2e8f0;cursor:pointer;"><input type="checkbox" id="eu-n-scan-succ" ' + (notifs.scanSuccess !== false ? 'checked' : '') + ' style="accent-color:#3b82f6;"/> 📷 Scan Success</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;color:#e2e8f0;cursor:pointer;"><input type="checkbox" id="eu-n-scan-fail" ' + (notifs.scanFailed !== false ? 'checked' : '') + ' style="accent-color:#f59e0b;"/> 📷 Scan Failed</label>' +
+          '</div>' +
+        '</div>' +
+
+        (target.role === 'user' ? (
+          '<div style="margin-bottom:16px;">' +
+            '<label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:6px;color:#cbd5e1;">Akses Printer <span style="font-weight:400;color:var(--muted);">(Kosongkan semua jika boleh akses semua printer)</span></label>' +
+            '<div style="max-height:120px;overflow-y:auto;background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;border:1px solid var(--border);display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;">' +
+              printerCBs +
+            '</div>' +
+          '</div>'
+        ) : '') +
+      '</div>' +
+      '<div style="padding:16px 24px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:flex-end;gap:10px;background:rgba(0,0,0,0.15);">' +
+        '<button onclick="closeEditUserModal()" style="padding:8px 16px;border-radius:8px;background:transparent;color:var(--subtle);border:1px solid var(--border);cursor:pointer;">Batal</button>' +
+        '<button onclick="saveUserEdit(\\\'' + escJs(username) + '\\\')" style="padding:8px 20px;border-radius:8px;background:var(--blue);color:#fff;border:none;font-weight:600;cursor:pointer;">Simpan Perubahan</button>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(modal);
+}
+
+function closeEditUserModal() {
+  const m = document.getElementById('edit-user-modal');
+  if (m) m.remove();
+}
+
+async function saveUserEdit(username) {
+  const phone = (document.getElementById('eu-phone') ? document.getElementById('eu-phone').value : '').trim();
+  const printSuccess = document.getElementById('eu-n-print-succ') ? document.getElementById('eu-n-print-succ').checked : true;
+  const printFailed = document.getElementById('eu-n-print-fail') ? document.getElementById('eu-n-print-fail').checked : true;
+  const scanSuccess = document.getElementById('eu-n-scan-succ') ? document.getElementById('eu-n-scan-succ').checked : true;
+  const scanFailed = document.getElementById('eu-n-scan-fail') ? document.getElementById('eu-n-scan-fail').checked : true;
+  const printerAccess = Array.from(document.querySelectorAll('.eu-printer-cb:checked')).map(cb => cb.value);
+
+  const notifications = { printSuccess, scanSuccess, printFailed, scanFailed };
+
+  try {
+    const r = await fetch('/api/users/' + encodeURIComponent(username), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, notifications, printerAccess })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      closeEditUserModal();
+      showUsersStatus('✅ User ' + username + ' berhasil diperbarui', 'ok');
+      renderUsersView();
+    } else {
+      alert('Gagal: ' + (d.error || 'Unknown error'));
+    }
+  } catch (e) {
+    alert('Gagal: ' + e.message);
   }
 }
 
