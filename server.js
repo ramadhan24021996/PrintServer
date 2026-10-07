@@ -4298,6 +4298,58 @@ function closePrintSuccessModal() {
   if (o) o.remove();
 }
 
+function showPrintErrorModal({ title = 'Gagal', message = 'Terjadi kesalahan saat memproses permintaan.' }) {
+  const old = document.getElementById('print-error-modal-overlay');
+  if (old) old.remove();
+
+  if (!document.getElementById('print-success-style')) {
+    const st = document.createElement('style');
+    st.id = 'print-success-style';
+    st.textContent =
+      '@keyframes popInModal { 0% { opacity:0; transform:scale(0.8); } 70% { transform:scale(1.05); } 100% { opacity:1; transform:scale(1); } }' +
+      '@keyframes fadeInModal { from { opacity:0; } to { opacity:1; } }';
+    document.head.appendChild(st);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'print-error-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeInModal 0.2s ease-out;';
+
+  overlay.innerHTML =
+    '<div style="background:#ffffff;color:#1e293b;border-radius:24px;width:100%;max-width:360px;text-align:center;position:relative;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;animation:popInModal 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);font-family:system-ui,sans-serif;">'
+      + '<div style="background:#fef2f2;padding:32px 20px 20px;position:relative;display:flex;justify-content:center;align-items:center;">'
+        + '<svg style="position:absolute;top:16px;left:40px;width:22px;height:22px;color:#f59e0b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
+        + '<svg style="position:absolute;top:12px;right:45px;width:26px;height:26px;color:#ef4444;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 9v4m0 4h.01"/></svg>'
+
+        + '<div style="width:72px;height:72px;background:#ef4444;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 20px rgba(239,68,68,0.35);position:relative;z-index:2;">'
+          + '<svg style="width:38px;height:38px;color:#ffffff;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">'
+            + '<line x1="18" y1="6" x2="6" y2="18"></line>'
+            + '<line x1="6" y1="6" x2="18" y2="18"></line>'
+          + '</svg>'
+        + '</div>'
+      + '</div>'
+
+      + '<div style="padding:10px 24px 20px;">'
+        + '<h2 style="margin:0 0 10px;font-size:1.7rem;font-weight:800;color:#0f172a;letter-spacing:-0.02em;">' + esc(title) + '</h2>'
+        + '<div style="font-size:0.9rem;color:#64748b;line-height:1.5;">' + esc(message) + '</div>'
+      + '</div>'
+
+      + '<div style="padding:0 24px 24px;">'
+        + '<button style="width:100%;padding:14px;background:#e2e8f0;color:#0f172a;border:none;border-radius:14px;font-size:1.05rem;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);transition:background 0.2s;" onclick="closePrintErrorModal()">'
+          + 'Tutup'
+        + '</button>'
+      + '</div>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePrintErrorModal(); });
+}
+
+function closePrintErrorModal() {
+  const o = document.getElementById('print-error-modal-overlay');
+  if (o) o.remove();
+}
+
 async function renderJobsView(silent) {
   document.getElementById('view-title').textContent='Print Jobs';
   document.getElementById('view-sub').textContent='CUPS printers, active queue, and history';
@@ -4963,17 +5015,17 @@ async function addUser() {
       if (usernameInput) usernameInput.value = '';
       if (passwordInput) passwordInput.value = '';
       if (phoneInput) phoneInput.value = '';
+      await renderUsersView();
       showUsersStatus('✅ User created', 'ok');
       showPrintSuccessModal({
-        title: 'Successfully',
+        title: 'Berhasil',
         message: 'Akun user <strong>' + esc(username) + '</strong> berhasil dibuat &amp; ditambahkan ke daftar Existing Users!'
       });
-      renderUsersView();
     } else {
       showUsersStatus('❌ ' + (d.error || 'Failed'), 'err');
       showPrintErrorModal({
-        title: 'Failed',
-        message: 'Gagal membuat user: ' + (d.error || 'Unknown error')
+        title: 'Gagal',
+        message: 'Gagal membuat user: ' + (d.error || 'Username sudah ada atau data tidak valid.')
       });
     }
   } catch(e) {
