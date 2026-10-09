@@ -2920,8 +2920,9 @@ app.post('/api/printers', async (req,res) => {
   res.json({ok:true,id});
 });
 app.put('/api/printers/:id', async (req,res) => {
-  const idx=PRINTERS.findIndex(p=>p.id===Number(req.params.id));
-  if (idx===-1) return res.status(404).json({error:'not found'});
+  const targetId = String(req.params.id);
+  const idx = PRINTERS.findIndex(p => String(p.id) === targetId || String(p.name).toLowerCase() === targetId.toLowerCase());
+  if (idx === -1) return res.status(404).json({error:'not found'});
   const {autoProvision, ...rest} = req.body;
   PRINTERS[idx]={...PRINTERS[idx],...rest,id:PRINTERS[idx].id,alertsEnabled:rest.alertsEnabled!==undefined?rest.alertsEnabled:PRINTERS[idx].alertsEnabled};
   savePrinters(); refreshAll();
@@ -2932,9 +2933,13 @@ app.put('/api/printers/:id', async (req,res) => {
   res.json({ok:true});
 });
 app.delete('/api/printers/:id', (req,res) => {
-  PRINTERS=PRINTERS.filter(p=>p.id!==Number(req.params.id));
-  cache.data=cache.data.filter(p=>p.id!==Number(req.params.id));
-  savePrinters(); res.json({ok:true});
+  const targetId = String(req.params.id);
+  PRINTERS = PRINTERS.filter(p => String(p.id) !== targetId && String(p.name).toLowerCase() !== targetId.toLowerCase());
+  if (cache.data) {
+    cache.data = cache.data.filter(p => String(p.id) !== targetId && String(p.name).toLowerCase() !== targetId.toLowerCase());
+  }
+  savePrinters();
+  res.json({ok:true});
 });
 
 // Print jobs
@@ -4135,12 +4140,12 @@ function printerCard(p) {
       <div class="pcard-badges">\${alertBadge}<span class="badge \${sc}"><span class="dot \${p.online?'on':'off'}"></span>\${p.status||'Offline'}</span></div>
     </div>
     <div class="pcard-tabs">
-      <div class="tab active" onclick="switchTab(\${p.id},'toner',this)">Toner</div>
-      <div class="tab" onclick="switchTab(\${p.id},'trays',this)">Trays</div>
-      <div class="tab" onclick="switchTab(\${p.id},'info',this)">Info</div>
-      <div class="tab" onclick="switchTab(\${p.id},'alerts',this)">Alerts\${p.alerts&&p.alerts.length?' ('+p.alerts.length+')':''}</div>
-      <div class="tab" onclick="switchTab(\${p.id},'pages',this)">Pages</div>
-      <div class="tab" onclick="switchTab(\${p.id},'printcard',this)">🖨 Print</div>
+      <div class="tab active" onclick="switchTab('\${escJs(p.id)}','toner',this)">Toner</div>
+      <div class="tab" onclick="switchTab('\${escJs(p.id)}','trays',this)">Trays</div>
+      <div class="tab" onclick="switchTab('\${escJs(p.id)}','info',this)">Info</div>
+      <div class="tab" onclick="switchTab('\${escJs(p.id)}','alerts',this)">Alerts\${p.alerts&&p.alerts.length?' ('+p.alerts.length+')':''}</div>
+      <div class="tab" onclick="switchTab('\${escJs(p.id)}','pages',this)">Pages</div>
+      <div class="tab" onclick="switchTab('\${escJs(p.id)}','printcard',this)">🖨 Print</div>
     </div>
     <div class="pcard-body">
       <div class="tab-panel active" id="tp-\${p.id}-toner">\${tonerPanel(p)}</div>
@@ -4153,8 +4158,8 @@ function printerCard(p) {
     <div class="pcard-footer">
       <span class="footer-ip">\${p.ip} · \${(p.brand||'').toUpperCase()}</span>
       <div class="footer-actions">
-        <button class="btn-ghost btn-sm" onclick="editPrinter(\${p.id})">✏</button>
-        <button class="btn-danger btn-sm" onclick="delPrinter(\${p.id})">✕</button>
+        <button class="btn-ghost btn-sm" onclick="editPrinter('\${escJs(p.id)}')" title="Edit Printer">✏</button>
+        <button class="btn-danger btn-sm" onclick="delPrinter('\${escJs(p.id)}','\${escJs(p.name)}')" title="Hapus Printer">✕</button>
       </div>
     </div>
   </div>\`;
@@ -6106,7 +6111,7 @@ function openModal(id) {
   document.getElementById('modal-title').textContent=id?'Edit Printer':'Add Printer';
   document.getElementById('edit-id').value=id||'';
   if (id) {
-    const p=state.data.find(x=>x.id===id);
+    const p=state.data.find(x=>String(x.id)===String(id));
     if (p) { document.getElementById('f-name').value=p.name||''; document.getElementById('f-ip').value=p.ip||'';
       document.getElementById('f-brand').value=p.brand||'generic'; document.getElementById('f-community').value=p.community||'public';
       document.getElementById('f-location').value=p.location||''; }
@@ -6142,7 +6147,22 @@ async function togglePrinterAlerts(id, enable) {
   await fetch('/api/printers/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({alertsEnabled:enable})});
   load();
 }
-async function delPrinter(id){ if(!confirm('Remove printer?'))return; await fetch('/api/printers/'+id,{method:'DELETE'}); load(); }
+async function delPrinter(id, name) {
+  const pName = name || id;
+  if (!confirm('Apakah Anda yakin ingin menghapus printer "' + pName + '"?')) return;
+  try {
+    const r = await fetch('/api/printers/' + encodeURIComponent(id), { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok !== false) {
+      showToast('✅ Printer "' + pName + '" berhasil dihapus!');
+      await load(false);
+    } else {
+      showToast('❌ Gagal menghapus printer: ' + (d.error || 'Terjadi kesalahan'));
+    }
+  } catch (err) {
+    showToast('❌ Gagal menghapus printer: ' + err.message);
+  }
+}
 function editPrinter(id){ openModal(id); }
 
 function fmtSize(b){ if(b<1024)return b+'B'; if(b<1024*1024)return Math.round(b/1024)+'KB'; return (b/1024/1024).toFixed(1)+'MB'; }
