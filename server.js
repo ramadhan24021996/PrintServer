@@ -3283,6 +3283,12 @@ const HTML = `<!DOCTYPE html>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="apple-mobile-web-app-title" content="PrintServer"/>
 <link rel="manifest" href="/manifest.json"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+</script>
 <title>PrintServer</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3495,6 +3501,153 @@ select option{background:var(--surface)}
   .hamburger{display:flex;align-items:center}
   .hactions .btn-outline{display:none}
 }
+/* PDF Preview Split View Styles */
+.print-split-container {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 20px;
+  max-width: 1150px;
+  margin: 10px auto 40px;
+  align-items: start;
+}
+@media (max-width: 920px) {
+  .print-split-container {
+    grid-template-columns: 1fr;
+  }
+}
+.preview-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+}
+.preview-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.preview-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #f1f5f9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-tool {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s;
+}
+.btn-tool:hover { background: rgba(59,130,246,0.2); border-color: var(--blue); }
+.btn-tool:disabled { opacity: 0.4; cursor: not-allowed; }
+.preview-canvas-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #090d16;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: auto;
+  padding: 16px;
+  min-height: 420px;
+  position: relative;
+}
+#pdf-canvas-main {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  border-radius: 4px;
+  max-width: 100%;
+  height: auto;
+  display: none;
+}
+#img-preview-main {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  display: none;
+}
+.preview-empty-state {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 20px;
+}
+.preview-empty-state .empty-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+  opacity: 0.7;
+}
+.summary-card {
+  background: rgba(59,130,246,0.08);
+  border: 1px solid rgba(59,130,246,0.25);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 14px 0;
+}
+.summary-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--blue);
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+.summary-row:last-child { margin-bottom: 0; }
+.summary-val {
+  font-weight: 700;
+  color: #ffffff;
+}
+.sheet-highlight {
+  color: #4ade80;
+  font-size: 0.95rem;
+}
+.warning-badge {
+  background: rgba(245,158,11,0.15);
+  border: 1px solid rgba(245,158,11,0.3);
+  color: #fbbf24;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Grouping View Styles */
 .grp-stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:20px}
 .grp-stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px;display:flex;align-items:center;gap:14px}
@@ -6002,7 +6155,168 @@ let printFiles = {};
 function dzDrag(e,id){ e.preventDefault(); document.getElementById('dz-'+id).classList.add('drag'); }
 function dzLeave(id){ document.getElementById('dz-'+id).classList.remove('drag'); }
 function dzDrop(e,id){ e.preventDefault(); dzLeave(id); if(e.dataTransfer.files[0]) dzFile(id,e.dataTransfer.files[0]); }
-function dzFile(id,f){ if(!f)return; printFiles[id]=f; document.getElementById('dz-label-'+id).textContent='📎 '+f.name+' ('+fmtSize(f.size)+')'; }
+
+// ── PDF Preview & Paper Estimator Helper Logic ─────────────────────────────────
+let pdfPreviewState = {
+  main: { doc: null, pageNum: 1, totalPages: 0, scale: 1.0, rotate: 0, fileType: null }
+};
+
+function dzFile(id, f) {
+  if (!f) return;
+  printFiles[id] = f;
+  const labelEl = document.getElementById('dz-label-' + id);
+  if (labelEl) labelEl.textContent = '📎 ' + f.name + ' (' + fmtSize(f.size) + ')';
+
+  const emptyEl = document.getElementById('preview-empty-' + id);
+  const canvasEl = document.getElementById('pdf-canvas-' + id);
+  const imgEl = document.getElementById('img-preview-' + id);
+  const officeEl = document.getElementById('preview-office-' + id);
+
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const ext = f.name.slice(((f.name.lastIndexOf('.') - 1) >>> 0) + 2).toLowerCase();
+  const isPdf = f.type === 'application/pdf' || ext === 'pdf';
+  const isImg = f.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'bmp'].includes(ext);
+
+  if (isPdf) {
+    if (imgEl) imgEl.style.display = 'none';
+    if (officeEl) officeEl.style.display = 'none';
+    if (canvasEl) canvasEl.style.display = 'block';
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const typedarray = new Uint8Array(e.target.result);
+      if (typeof pdfjsLib === 'undefined') {
+        showToast('⚠️ PDF.js library belum dimuat', 'err');
+        return;
+      }
+      pdfjsLib.getDocument({ data: typedarray }).promise.then(pdf => {
+        pdfPreviewState[id] = { doc: pdf, pageNum: 1, totalPages: pdf.numPages, scale: 1.0, rotate: 0, fileType: 'pdf' };
+        renderPdfPage(id);
+        updatePaperSummary(id);
+      }).catch(err => {
+        console.error('Failed to load PDF preview:', err);
+        if (canvasEl) canvasEl.style.display = 'none';
+        if (officeEl) {
+          officeEl.style.display = 'block';
+          document.getElementById('office-file-name-' + id).textContent = f.name;
+        }
+      });
+    };
+    reader.readAsArrayBuffer(f);
+  } else if (isImg) {
+    if (canvasEl) canvasEl.style.display = 'none';
+    if (officeEl) officeEl.style.display = 'none';
+    if (imgEl) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        imgEl.src = e.target.result;
+        imgEl.style.display = 'block';
+      };
+      reader.readAsDataURL(f);
+    }
+    pdfPreviewState[id] = { doc: null, pageNum: 1, totalPages: 1, scale: 1.0, rotate: 0, fileType: 'img' };
+    updatePaperSummary(id);
+  } else {
+    if (canvasEl) canvasEl.style.display = 'none';
+    if (imgEl) imgEl.style.display = 'none';
+    if (officeEl) {
+      officeEl.style.display = 'block';
+      const fileNameEl = document.getElementById('office-file-name-' + id);
+      if (fileNameEl) fileNameEl.textContent = '📄 ' + f.name;
+    }
+    pdfPreviewState[id] = { doc: null, pageNum: 1, totalPages: 1, scale: 1.0, rotate: 0, fileType: 'doc' };
+    updatePaperSummary(id);
+  }
+}
+
+function renderPdfPage(id) {
+  const st = pdfPreviewState[id];
+  if (!st || !st.doc) return;
+
+  st.doc.getPage(st.pageNum).then(page => {
+    const canvas = document.getElementById('pdf-canvas-' + id);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const viewport = page.getViewport({ scale: st.scale, rotation: st.rotate });
+
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    const renderContext = {
+      canvasContext: ctx,
+      viewport: viewport
+    };
+    page.render(renderContext);
+
+    // Update page indicator
+    const indicator = document.getElementById('page-indicator-' + id);
+    if (indicator) indicator.textContent = st.pageNum + ' / ' + st.totalPages;
+
+    // Update button states
+    const btnPrev = document.getElementById('btn-prev-' + id);
+    const btnNext = document.getElementById('btn-next-' + id);
+    if (btnPrev) btnPrev.disabled = (st.pageNum <= 1);
+    if (btnNext) btnNext.disabled = (st.pageNum >= st.totalPages);
+  });
+}
+
+function changePdfPage(id, delta) {
+  const st = pdfPreviewState[id];
+  if (!st || !st.doc) return;
+  const newPage = st.pageNum + delta;
+  if (newPage >= 1 && newPage <= st.totalPages) {
+    st.pageNum = newPage;
+    renderPdfPage(id);
+  }
+}
+
+function zoomPdfCanvas(id, delta) {
+  const st = pdfPreviewState[id];
+  if (!st || !st.doc) return;
+  const newScale = Math.min(Math.max(st.scale + delta, 0.4), 2.5);
+  st.scale = newScale;
+  renderPdfPage(id);
+}
+
+function rotatePdfCanvas(id) {
+  const st = pdfPreviewState[id];
+  if (!st || !st.doc) return;
+  st.rotate = (st.rotate + 90) % 360;
+  renderPdfPage(id);
+}
+
+function updatePaperSummary(id) {
+  const st = pdfPreviewState[id] || { totalPages: 0 };
+  const pages = st.totalPages || 0;
+
+  const copiesInput = document.getElementById('po-copies-' + id);
+  const duplexInput = document.getElementById('po-duplex-' + id);
+
+  const copies = parseInt(copiesInput?.value || '1') || 1;
+  const isDuplex = duplexInput?.value && duplexInput.value !== 'none';
+
+  const sheetsPerCopy = isDuplex ? Math.ceil(pages / 2) : pages;
+  const totalSheets = sheetsPerCopy * copies;
+
+  const sumPagesEl = document.getElementById('sum-pages-' + id);
+  const sumCopiesEl = document.getElementById('sum-copies-' + id);
+  const sumSheetsEl = document.getElementById('sum-sheets-' + id);
+  const sumWarnEl = document.getElementById('sum-warning-' + id);
+
+  if (sumPagesEl) sumPagesEl.textContent = pages ? pages + ' Halaman' : '0 Halaman';
+  if (sumCopiesEl) sumCopiesEl.textContent = copies + 'x';
+  if (sumSheetsEl) sumSheetsEl.textContent = totalSheets ? totalSheets + ' Lembar' : '0 Lembar';
+
+  if (sumWarnEl) {
+    if (totalSheets > 20) {
+      sumWarnEl.innerHTML = '<div class="warning-badge">⚠️ Perhatian: Cetakan ini membutuhkan <strong>' + totalSheets + ' lembar</strong> kertas.</div>';
+    } else {
+      sumWarnEl.innerHTML = '';
+    }
+  }
+}
+
 
 async function populatePrinterSelects() {
   await loadCupsPrinters();
