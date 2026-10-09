@@ -2616,6 +2616,12 @@ function printFile(filePath, printerName, copies, duplex, colorMode, title) {
       }
     }
 
+    // Auto-provision printer in CUPS if registered but missing from CUPS queue
+    const pObj = PRINTERS.find(p => p.name.toLowerCase() === printerName.toLowerCase() || String(p.id) === printerName);
+    if (pObj && pObj.ip) {
+      await autoProvisionPrinter(pObj.name, pObj.ip).catch(() => {});
+    }
+
     const safeCopies = Math.max(1, Math.min(99, parseInt(copies, 10) || 1));
     const args = ['-d', printerName, '-n', String(safeCopies)];
     if (title) args.push('-t', String(title));
@@ -6392,8 +6398,21 @@ function updatePaperSummary(id) {
 
 async function populatePrinterSelects() {
   await loadCupsPrinters();
-  const printers = cupsDetail.printers || [];
+  let printers = [...(cupsDetail.printers || [])];
   const def = cupsDetail.defaultPrinter;
+
+  try {
+    const regRes = await fetch('/api/printers').then(x => x.json()).catch(() => ({}));
+    const regPrinters = regRes.data || [];
+    const cupsNames = new Set(printers.map(p => p.name.toLowerCase()));
+    regPrinters.forEach(rp => {
+      if (rp.name && !cupsNames.has(rp.name.toLowerCase())) {
+        printers.push({ name: rp.name, state: 'idle (registered)' });
+        cupsNames.add(rp.name.toLowerCase());
+      }
+    });
+  } catch(e) {}
+
   const sorted = [...printers].sort((a,b) => {
     const aOn = !a.state.toLowerCase().includes('disabled');
     const bOn = !b.state.toLowerCase().includes('disabled');
