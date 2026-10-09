@@ -239,7 +239,7 @@ function getSession(req) {
 const USER_ALLOWED = [
   /^\/api\/me$/, /^\/api\/logout$/,
   /^\/api\/printers$/, /^\/api\/printers\/refresh$/,
-  /^\/api\/cups\/printers$/, /^\/api\/print$/, /^\/api\/cups\/jobs$/,
+  /^\/api\/cups\/printers$/, /^\/api\/cups\/printers\/detail$/, /^\/api\/print$/, /^\/api\/cups\/jobs$/,
   /^\/api\/scans(\/.*)?$/,
   /^\/api\/shared-docs/, /^\/api\/mobile\/print-shared$/, /^\/api\/mobile\/print-scan$/,
   /^\/api\/mobile\/token$/, /^\/api\/mobile\/qr-image$/,
@@ -2699,7 +2699,13 @@ function setPrinterEnabled(name, enabled) {
 }
 function setDefaultPrinter(name) {
   return new Promise((resolve,reject) => {
-    execFile('lpadmin', ['-d', name], (err,stdout,stderr) => err ? reject(new Error(stderr||err.message)) : resolve(true));
+    execFile('lpadmin', ['-d', name], (err,stdout,stderr) => {
+      execFile('lpoptions', ['-d', name], () => {});
+      SETTINGS.defaultCupsPrinter = name;
+      saveSettings().catch(() => {});
+      if (err) reject(new Error(stderr||err.message));
+      else resolve(true);
+    });
   });
 }
 function getCupsPrinterDetail() {
@@ -2715,6 +2721,19 @@ function getCupsPrinterDetail() {
         const pm=line.match(/^printer\s+(\S+)\s+(is idle|now printing|is printing|disabled)/i);
         if (pm) printers.push({name:pm[1], state:pm[2]});
       });
+
+      // Auto-restore CUPS default printer if lost/reset
+      if (!defaultPrinter && printers.length > 0) {
+        const targetDef = (SETTINGS.defaultCupsPrinter && printers.some(p => p.name === SETTINGS.defaultCupsPrinter))
+          ? SETTINGS.defaultCupsPrinter
+          : (printers.length === 1 ? printers[0].name : null);
+        if (targetDef) {
+          defaultPrinter = targetDef;
+          execFile('lpadmin', ['-d', targetDef], () => {});
+          execFile('lpoptions', ['-d', targetDef], () => {});
+        }
+      }
+
       resolve({defaultPrinter, printers});
     });
   });
