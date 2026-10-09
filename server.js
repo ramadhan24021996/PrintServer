@@ -3297,7 +3297,7 @@ const HTML = `<!DOCTYPE html>
   --text:#ffffff;--muted:#cbd5e1;--subtle:#f1f5f9;
   --blue:#3b82f6;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--orange:#f97316;
 }
-body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,0.75),rgba(15,23,42,0.65)),url('/bg.jpg') center/cover no-repeat fixed;color:var(--text);min-height:100vh}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,0.55),rgba(15,23,42,0.45)),url('/bg.jpg') center/cover no-repeat fixed;color:var(--text);min-height:100vh}
 .layout{display:flex;min-height:100vh}
 .sidebar{width:224px;background:rgba(15,23,42,0.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:20;overflow-y:auto}
 .sidebar-logo{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem;color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.5)}
