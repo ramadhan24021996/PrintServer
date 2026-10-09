@@ -3297,7 +3297,8 @@ const HTML = `<!DOCTYPE html>
   --text:#ffffff;--muted:#cbd5e1;--subtle:#f1f5f9;
   --blue:#3b82f6;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--orange:#f97316;
 }
-body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,0.55),rgba(15,23,42,0.45)),url('/bg.jpg') center/cover no-repeat fixed;color:var(--text);min-height:100vh}
+:root{--bg-overlay-opacity:0.78;--bg:#0f172a;--surface:rgba(15,23,42,0.85);--surface2:rgba(15,23,42,0.92);--border:rgba(255,255,255,0.16);--border2:rgba(59,130,246,0.4);--text:#ffffff;--muted:#cbd5e1;--subtle:#f1f5f9;--blue:#3b82f6;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--orange:#f97316;}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(135deg,rgba(15,23,42,var(--bg-overlay-opacity, 0.78)),rgba(15,23,42,var(--bg-overlay-opacity, 0.78))),url('/bg.jpg') center/cover no-repeat fixed;color:var(--text);min-height:100vh}
 .layout{display:flex;min-height:100vh}
 .sidebar{width:224px;background:rgba(15,23,42,0.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:20;overflow-y:auto}
 .sidebar-logo{padding:18px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem;color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.5)}
@@ -3795,6 +3796,9 @@ select option{background:var(--surface)}
       </div>
     </div>
     <div class="hactions">
+      <button class="btn-outline btn-sm" onclick="toggleThemeMode()" id="theme-toggle-btn" title="Ganti Mode Background (Dark / Light / Balanced)" style="margin-right:2px;">
+        <span id="theme-toggle-icon">🌙</span> <span id="theme-toggle-text">Dark</span>
+      </button>
       <button class="btn-outline btn-sm" onclick="doRefresh()" id="refresh-btn"><span id="refresh-icon">↻</span> Refresh</button>
       <button class="btn-primary btn-sm" onclick="openModal()">+ Add Printer</button>
     </div>
@@ -6482,6 +6486,41 @@ function editPrinter(id){ openModal(id); }
 function fmtSize(b){ if(b<1024)return b+'B'; if(b<1024*1024)return Math.round(b/1024)+'KB'; return (b/1024/1024).toFixed(1)+'MB'; }
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escJs(s){ return String(s||'').replace(/'/g,"\\'").replace(/"/g,'\\"'); }
+
+
+// ── Theme Mode Toggle (Dark / Light / Balanced) ──────────────────────────────
+const THEME_MODES = [
+  { label: 'Dark', icon: '🌙', opacity: 0.78 },
+  { label: 'Light', icon: '☀️', opacity: 0.22 },
+  { label: 'Balanced', icon: '🌗', opacity: 0.48 }
+];
+let currentThemeIdx = 0;
+
+function applyThemeMode(idx) {
+  currentThemeIdx = (idx >= 0 && idx < THEME_MODES.length) ? idx : 0;
+  const mode = THEME_MODES[currentThemeIdx];
+  document.documentElement.style.setProperty('--bg-overlay-opacity', mode.opacity);
+  const iconEl = document.getElementById('theme-toggle-icon');
+  const textEl = document.getElementById('theme-toggle-text');
+  if (iconEl) iconEl.textContent = mode.icon;
+  if (textEl) textEl.textContent = mode.label;
+  try {
+    localStorage.setItem('theme_mode_idx', currentThemeIdx);
+  } catch (e) {}
+}
+
+function toggleThemeMode() {
+  const nextIdx = (currentThemeIdx + 1) % THEME_MODES.length;
+  applyThemeMode(nextIdx);
+  const mode = THEME_MODES[nextIdx];
+  showToast('🎨 Mode Background: ' + mode.icon + ' ' + mode.label);
+}
+
+// Restore saved theme on page load
+try {
+  const saved = localStorage.getItem('theme_mode_idx');
+  if (saved !== null) applyThemeMode(parseInt(saved, 10) || 0);
+} catch (e) {}
 
 applyRoleUI();
 if (window.USER_ROLE!=='admin') { currentView='print'; }
