@@ -6,6 +6,7 @@ const fs      = require('fs');
 const path    = require('path');
 const https   = require('https');
 const os      = require('os');
+const net     = require('net');
 const { execFile, exec } = require('child_process');
 const { promisify } = require('util');
 const crypto  = require('crypto');
@@ -2745,9 +2746,26 @@ function getCupsPrinterDetail() {
   });
 }
 // Discover printers CUPS can see (network/IPP/DNS-SD/USB) without adding them yet
-function lpinfoDiscover() {
+function probePrinterPort(ip, port = 9100, timeoutMs = 400) {
   return new Promise(resolve => {
-    exec('lpinfo --include-schemes dnssd,snmp,lpd,socket,ipp,ipps,usb -v 2>/dev/null; echo "---"; lpstat -e 2>/dev/null; echo "---"; lpstat -v 2>/dev/null', (err, stdout) => {
+    const socket = new net.Socket();
+    let status = false;
+    socket.setTimeout(timeoutMs);
+    socket.on('connect', () => {
+      status = true;
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('timeout', () => { socket.destroy(); resolve(false); });
+    socket.on('error', () => { socket.destroy(); resolve(false); });
+    socket.connect(port, ip);
+  });
+}
+
+// Discover printers CUPS can see (network/IPP/DNS-SD/USB + IP Port Scan fallback)
+function lpinfoDiscover(cidr) {
+  return new Promise(async resolve => {
+    exec('lpinfo --include-schemes dnssd,snmp,lpd,socket,ipp,ipps,usb -v 2>/dev/null; echo "---"; lpstat -e 2>/dev/null; echo "---"; lpstat -v 2>/dev/null', async (err, stdout) => {
       const found = [];
       const seenUris = new Set();
       const parts = (stdout || '').split('---');
@@ -2792,6 +2810,36 @@ function lpinfoDiscover() {
         }
       });
 
+      // 4. Active Subnet IP Port Scan fallback (for Docker container / mDNS bypass)
+      const targetCidr = (cidr || SETTINGS.network.scanSubnet || guessLocalSubnet()).trim();
+      const base = targetCidr.split('/')[0].split('.').slice(0,3).join('.');
+      if (base) {
+        const ips = Array.from({length:254}, (_,i) => `${base}.${i+1}`);
+        const BATCH = 32;
+        for (let i=0; i<ips.length; i+=BATCH) {
+          const batch = ips.slice(i, i+BATCH);
+          await Promise.all(batch.map(async ip => {
+            const [has9100, has631] = await Promise.all([
+              probePrinterPort(ip, 9100, 350),
+              probePrinterPort(ip, 631, 350)
+            ]);
+            if (has631 || has9100) {
+              const ippUri = `ipp://${ip}/ipp/print`;
+              const socketUri = `socket://${ip}:9100`;
+              const safeIpName = `Printer_${ip.replace(/\./g, '_')}`;
+              if (has631 && !seenUris.has(ippUri)) {
+                seenUris.add(ippUri);
+                found.push({ kind: `Network IPP Printer (${ip})`, uri: ippUri, name: safeIpName });
+              }
+              if (has9100 && !seenUris.has(socketUri)) {
+                seenUris.add(socketUri);
+                found.push({ kind: `AppSocket RAW Printer (${ip}:9100)`, uri: socketUri, name: `RAW_${safeIpName}` });
+              }
+            }
+          }));
+        }
+      }
+
       resolve(found);
     });
   });
@@ -2834,6 +2882,24 @@ function snmpProbe(ip, community) {
     });
   });
 }
+async function discoverPrinterOnIp(ip, community) {
+  const snmpDescr = await snmpProbe(ip, community);
+  if (snmpDescr) return { ip, descr: snmpDescr };
+
+  const [has9100, has631, has515] = await Promise.all([
+    probePrinterPort(ip, 9100, 350),
+    probePrinterPort(ip, 631, 350),
+    probePrinterPort(ip, 515, 350)
+  ]);
+  if (has9100 || has631 || has515) {
+    const protoList = [];
+    if (has631) protoList.push('IPP:631');
+    if (has9100) protoList.push('Port:9100');
+    if (has515) protoList.push('LPD:515');
+    return { ip, descr: `Network Printer on ${ip} [${protoList.join('/')}]` };
+  }
+  return null;
+}
 async function discoverSnmpDevices(cidr, community) {
   const base = (cidr||'').split('/')[0].split('.').slice(0,3).join('.');
   if (!base) return [];
@@ -2842,10 +2908,7 @@ async function discoverSnmpDevices(cidr, community) {
   const BATCH=32;
   for (let i=0;i<ips.length;i+=BATCH) {
     const batch = ips.slice(i,i+BATCH);
-    const res = await Promise.all(batch.map(async ip => {
-      const descr = await snmpProbe(ip, community);
-      return descr ? {ip, descr} : null;
-    }));
+    const res = await Promise.all(batch.map(ip => discoverPrinterOnIp(ip, community)));
     res.forEach(r=>{ if (r) results.push(r); });
   }
   return results;
@@ -3194,11 +3257,12 @@ app.get('/api/discover/subnet-guess', (_req,res) => {
   res.json({cidr: saved || guessLocalSubnet(), saved: !!saved});
 });
 
-// CUPS network discovery (lpinfo) + one-click add via lpadmin
-app.get('/api/cups/discover', async (_req,res) => {
+// CUPS network discovery (lpinfo + IP probe) + one-click add via lpadmin
+app.get('/api/cups/discover', async (req,res) => {
   try {
     await syncCupsToPrinters();
-    const found = await lpinfoDiscover();
+    const cidr = req.query.cidr || SETTINGS.network.scanSubnet || guessLocalSubnet();
+    const found = await lpinfoDiscover(cidr);
     const registeredNames = new Set((PRINTERS || []).map(p => p.name.toLowerCase()));
     try {
       const cupsDetail = await getCupsPrinterDetail();
