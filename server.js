@@ -3019,6 +3019,15 @@ app.post('/api/print', upload.single('file'), async (req,res) => {
 
 // Scans
 app.get('/api/scans', async (_req,res) => res.json({scans: await listScans(), dir:SCAN_DIR}));
+app.post('/api/scans/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const targetName = Date.now() + '-' + req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const destPath = path.join(SCAN_DIR, targetName);
+  fs.rename(req.file.path, destPath, (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to save scan file' });
+    res.json({ ok: true, filename: targetName });
+  });
+});
 app.get('/api/scans/download/:name', async (req,res) => {
   const name = path.basename(req.params.name);
   const full = path.join(SCAN_DIR, name);
@@ -3255,7 +3264,16 @@ app.get('/api/cups/printers/detail', async (req,res) => {
   const detail = await getCupsPrinterDetail();
   const allowed = getAllowedPrinterNames(req.user);
   if (allowed) {
-    detail.printers = (detail.printers||[]).filter(p => allowed.has(p.name.toLowerCase()));
+    detail.printers = (detail.printers||[]).filter(p => {
+      const pNameLower = p.name.toLowerCase();
+      if (allowed.has(pNameLower)) return true;
+      const prObj = PRINTERS.find(pr => pr.name.toLowerCase() === pNameLower || String(pr.id).toLowerCase() === pNameLower);
+      if (prObj && (allowed.has(prObj.name.toLowerCase()) || allowed.has(String(prObj.id).toLowerCase()))) return true;
+      for (const aName of allowed) {
+        if (pNameLower.includes(aName) || aName.includes(pNameLower)) return true;
+      }
+      return false;
+    });
   }
   res.json(detail);
 });
@@ -4532,7 +4550,13 @@ async function renderScansView(forceRefresh) {
         <div class="code-block">\${esc(smbaConf.config)}</div>
         <div style="margin-top:10px;font-size:.78rem;color:var(--muted)">Then on the printer web UI: <strong>Scan → Scan to Folder → \\\\\\\\SERVER_IP\\\\scans</strong></div>
         <div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Scan folder on server: <code>\${esc(d.dir)}</code></div>
-      </div>\` : '';
+      </div>\` : \`
+      <div class="samba-box">
+        <h3>📁 Folder Hasil Scan</h3>
+        <p>File hasil scan dari mesin printer MFP atau file yang di-upload tersimpan di folder ini.</p>
+        <div style="margin-top:6px;font-size:.8rem;color:var(--muted)">📍 <strong>Lokasi Folder Server:</strong> <code>\${esc(d.dir || '/opt/scans')}</code></div>
+        <div style="margin-top:4px;font-size:.8rem;color:var(--muted)">🌐 <strong>Share Folder Network (SMB):</strong> <code>\\\\\\\\SERVER_IP\\\\scans</code></div>
+      </div>\`;
     document.getElementById('content').innerHTML=\`
       \${sambaBox}
       <div class="scan-header">
@@ -4545,6 +4569,8 @@ async function renderScansView(forceRefresh) {
             <option value="ADF Duplex">ADF Duplex</option>
           </select>
           <button class="btn-primary btn-sm" id="scan-now-btn" onclick="triggerScanNow()">🖨 Scan Now</button>
+          <input type="file" id="scan-file-input" style="display:none" onchange="uploadScanFile(this)">
+          <button class="btn-outline btn-sm" onclick="document.getElementById('scan-file-input').click()">📤 Upload File</button>
           <button class="btn-outline btn-sm" onclick="renderScansView(true)">↻ Refresh</button>
         </div>
       </div>
@@ -4596,6 +4622,29 @@ async function triggerScanNow() {
   // DOM may have been re-rendered while scanning — re-apply state; reload list on success
   if (currentView !== 'scans') return;
   if (ok) renderScansView(); else applyScanUi();
+}
+
+async function uploadScanFile(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const formData = new FormData();
+  formData.append('file', file);
+  scanUi.statusHtml = scanStatusHtml('--muted', 'Mengunggah file ke folder scan…');
+  applyScanUi();
+  try {
+    const r = await fetch('/api/scans/upload', { method: 'POST', body: formData });
+    const d = await r.json();
+    if (d.ok) {
+      scanUi.statusHtml = scanStatusHtml('--green', '✅ Berhasil mengunggah ' + esc(d.filename));
+      renderScansView();
+    } else {
+      scanUi.statusHtml = scanStatusHtml('--red', '❌ ' + esc(d.error || 'Gagal mengunggah'));
+      applyScanUi();
+    }
+  } catch(e) {
+    scanUi.statusHtml = scanStatusHtml('--red', '❌ ' + esc(e.message));
+    applyScanUi();
+  }
 }
 
 // ── Jobs view ─────────────────────────────────────────────────────────────────
