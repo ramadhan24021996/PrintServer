@@ -18,7 +18,6 @@ services:
     volumes:
       - printserver_data:/app/data
       - printserver_scans:/opt/scans
-      - ./:/app
       - /var/run/cups/cups.sock:/var/run/cups/cups.sock
       - /dev/bus/usb:/dev/bus/usb
 
