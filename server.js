@@ -2498,15 +2498,21 @@ const AIRSCAN_CONF = process.env.AIRSCAN_CONF || '/etc/sane.d/airscan.conf';
 function provisionCupsPrinter(name, ip) {
   return new Promise(resolve => {
     const safeName = String(name).replace(/[^a-zA-Z0-9_-]/g, '_');
-    execFile('lpadmin', ['-p', safeName, '-E', '-v', `ipp://${ip}/ipp/print`, '-m', 'everywhere'], (err, stdout, stderr) => {
-      if (err) {
-        const msg = (stderr || err.message || '').trim();
-        const hint = msg.toLowerCase().includes('forbidden') || msg.toLowerCase().includes('not-authorized')
-          ? ' (Ensure user is in lpadmin group: sudo usermod -aG lpadmin $USER)'
-          : '';
-        return resolve({ok:false, error: (msg || 'lpadmin failed') + hint});
-      }
-      resolve({ok:true});
+    // Try 1: IPP Everywhere
+    execFile('lpadmin', ['-p', safeName, '-E', '-v', `ipp://${ip}/ipp/print`, '-m', 'everywhere'], (err1) => {
+      if (!err1) return resolve({ok:true});
+
+      // Try 2: AppSocket / RAW port 9100
+      execFile('lpadmin', ['-p', safeName, '-E', '-v', `socket://${ip}:9100`, '-m', 'raw'], (err2) => {
+        if (!err2) return resolve({ok:true});
+
+        // Try 3: IPP raw
+        execFile('lpadmin', ['-p', safeName, '-E', '-v', `ipp://${ip}/ipp/print`, '-m', 'raw'], (err3, stdout, stderr) => {
+          if (!err3) return resolve({ok:true});
+          const msg = (stderr || err3.message || '').trim();
+          resolve({ok:false, error: msg || 'lpadmin failed'});
+        });
+      });
     });
   });
 }
@@ -2851,9 +2857,33 @@ function lpadminAddPrinter(name, uri) {
       const cupsPrinterName = uri.replace('cups://', '');
       return resolve(cupsPrinterName);
     }
-    execFile('lpadmin', ['-p', safe, '-E', '-v', uri, '-m', 'everywhere'], (err,stdout,stderr) => {
-      if (err) return reject(new Error(stderr||err.message));
-      resolve(safe);
+    // Try 1: IPP Everywhere
+    execFile('lpadmin', ['-p', safe, '-E', '-v', uri, '-m', 'everywhere'], (err1) => {
+      if (!err1) return resolve(safe);
+
+      // Try 2: RAW model
+      execFile('lpadmin', ['-p', safe, '-E', '-v', uri, '-m', 'raw'], (err2) => {
+        if (!err2) return resolve(safe);
+
+        // Try 3: AppSocket socket://<IP>:9100 fallback
+        const ipMatch = uri.match(/(?:ipp|socket|lpd):\/\/([^\/:]+)/);
+        if (ipMatch) {
+          const ip = ipMatch[1];
+          const socketUri = `socket://${ip}:9100`;
+          execFile('lpadmin', ['-p', safe, '-E', '-v', socketUri, '-m', 'raw'], (err3) => {
+            if (!err3) return resolve(safe);
+            execFile('lpadmin', ['-p', safe, '-E', '-v', socketUri], (err4, stdout, stderr) => {
+              if (!err4) return resolve(safe);
+              reject(new Error(stderr || err4.message));
+            });
+          });
+        } else {
+          execFile('lpadmin', ['-p', safe, '-E', '-v', uri], (err4, stdout, stderr) => {
+            if (!err4) return resolve(safe);
+            reject(new Error(stderr || err4.message));
+          });
+        }
+      });
     });
   });
 }
